@@ -1,0 +1,65 @@
+[package]
+name = "awsom"
+version = "0.1.0"
+edition = "2021"
+authors = ["Oleksii Morozenko"]
+description = "k9s-like TUI for AWS SSO sessions"
+license = "Apache-2.0"
+repository = "https://github.com/oleksiimorozenko/awsom"
+homepage = "https://github.com/oleksiimorozenko/awsom"
+documentation = "https://github.com/oleksiimorozenko/awsom#readme"
+readme = "README.md"
+keywords = ["aws", "sso", "tui", "cli", "credentials"]
+categories = ["command-line-utilities", "authentication"]
+rust-version = "1.70"
+
+[[bin]]
+name = "awsom"
+path = "src/main.rs"
+
+[dependencies]
+# AWS SDK
+aws-config = "1.5"
+aws-sdk-sso = "1.56"
+aws-sdk-ssooidc = "1.56"
+aws-types = "1.3"
+aws-smithy-types = "1.2"
+
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# File system
+dirs = "5.0"
+
+# Utilities
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webbrowser = "1.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+urlencoding = "2.1"
+
+[dev-dependencies]
+tempfile = "3.14"
+mockall = "0.13"
