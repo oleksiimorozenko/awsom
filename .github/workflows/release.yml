@@ -12,48 +12,49 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Get version from tag
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
-          body: |
-            ## What's Changed
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## What's Changed
 
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
 
-            ## Installation
+          ## Installation
 
-            ### Using Cargo
-            ```bash
-            cargo install awsom
-            ```
+          ### Using Cargo
+          \`\`\`bash
+          cargo install awsom
+          \`\`\`
 
-            ### Download Binary
-            Download the appropriate binary for your platform below.
+          ### Download Binary
+          Download the appropriate binary for your platform below.
 
-            ### Homebrew (macOS/Linux)
-            ```bash
-            brew install oleksiimorozenko/tap/awsom
-            ```
+          ### Homebrew (macOS/Linux)
+          \`\`\`bash
+          brew install oleksiimorozenko/tap/awsom
+          \`\`\`" \
+            ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') && '--prerelease' || '' }}
 
   build-release:
     name: Build Release
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -113,49 +114,23 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 ${{ matrix.archive_name }}.zip).Hash.ToLower()
           "$hash  ${{ matrix.archive_name }}.zip" | Out-File -Encoding ASCII ${{ matrix.archive_name }}.zip.sha256
 
-      - name: Upload archive (Unix)
+      - name: Upload release assets (Unix)
         if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.archive_name }}.tar.gz
-          asset_name: ${{ matrix.archive_name }}.tar.gz
-          asset_content_type: application/gzip
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.ref_name }} \
+            ${{ matrix.archive_name }}.tar.gz \
+            ${{ matrix.archive_name }}.tar.gz.sha256
 
-      - name: Upload checksum (Unix)
-        if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.archive_name }}.tar.gz.sha256
-          asset_name: ${{ matrix.archive_name }}.tar.gz.sha256
-          asset_content_type: text/plain
-
-      - name: Upload archive (Windows)
+      - name: Upload release assets (Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.archive_name }}.zip
-          asset_name: ${{ matrix.archive_name }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload checksum (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.archive_name }}.zip.sha256
-          asset_name: ${{ matrix.archive_name }}.zip.sha256
-          asset_content_type: text/plain
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.ref_name }} `
+            ${{ matrix.archive_name }}.zip `
+            ${{ matrix.archive_name }}.zip.sha256
 
   publish-crates:
     name: Publish to crates.io
