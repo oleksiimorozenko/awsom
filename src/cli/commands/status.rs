@@ -39,9 +39,15 @@ pub async fn execute(json: bool) -> Result<()> {
             } else {
                 let expires_in_minutes = token.expires_in_minutes();
                 if json {
-                    println!("{{\"active\":true,\"expires_in_minutes\":{}}}",expires_in_minutes);
+                    println!(
+                        "{{\"active\":true,\"expires_in_minutes\":{}}}",
+                        expires_in_minutes
+                    );
                 } else {
-                    println!("SSO session active (expires in {} minutes)", expires_in_minutes);
+                    println!(
+                        "SSO session active (expires in {} minutes)",
+                        expires_in_minutes
+                    );
                 }
                 std::process::exit(0);
             }

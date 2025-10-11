@@ -24,9 +24,7 @@ pub fn execute(shell: Shell) {
             eprintln!("# Add to ~/.bashrc:");
             eprintln!("#   eval \"$(awsom completions bash)\"");
             eprintln!("# Or save to completion directory:");
-            eprintln!(
-                "#   awsom completions bash > /usr/local/etc/bash_completion.d/awsom"
-            );
+            eprintln!("#   awsom completions bash > /usr/local/etc/bash_completion.d/awsom");
         }
         Shell::Zsh => {
             eprintln!("# Add to ~/.zshrc:");
@@ -37,9 +35,7 @@ pub fn execute(shell: Shell) {
         }
         Shell::Fish => {
             eprintln!("# Save to fish completion directory:");
-            eprintln!(
-                "#   awsom completions fish > ~/.config/fish/completions/awsom.fish"
-            );
+            eprintln!("#   awsom completions fish > ~/.config/fish/completions/awsom.fish");
         }
         Shell::PowerShell => {
             eprintln!("# Add to PowerShell profile:");

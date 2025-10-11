@@ -88,7 +88,7 @@ pub fn write_credentials_with_metadata(
             ("aws_secret_access_key", &creds.secret_access_key),
             ("aws_session_token", &creds.session_token),
         ],
-        metadata.as_ref().map(|v| v.as_slice()),
+        metadata.as_deref(),
     );
 
     // Write updated credentials
@@ -369,7 +369,7 @@ pub fn get_existing_profile_name(account: &AccountRole) -> Result<Option<String>
             current_profile = Some(trimmed[1..trimmed.len() - 1].to_string());
             found_account_id = false;
             found_role_name = false;
-        } else if let Some(_) = &current_profile {
+        } else if current_profile.is_some() {
             // Check for metadata comments
             if trimmed.starts_with('#') {
                 if trimmed.contains(&format!("Account: {}", account.account_id)) {

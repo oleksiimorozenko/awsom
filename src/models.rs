@@ -232,10 +232,7 @@ mod tests {
             role_name: "Developer".to_string(),
         };
         assert_eq!(role.display_name(), "Production/Developer");
-        assert_eq!(
-            role.full_display(),
-            "Production (123456789012): Developer"
-        );
+        assert_eq!(role.full_display(), "Production (123456789012): Developer");
     }
 
     #[test]

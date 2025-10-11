@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub sso: SsoConfig,
@@ -14,19 +14,10 @@ pub struct Config {
     pub profile_defaults: ProfileDefaults,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SsoConfig {
     pub start_url: Option<String>,
     pub region: Option<String>,
-}
-
-impl Default for SsoConfig {
-    fn default() -> Self {
-        Self {
-            start_url: None,
-            region: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,29 +38,10 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProfileDefaults {
     pub region: Option<String>,
     pub output: Option<String>,
-}
-
-impl Default for ProfileDefaults {
-    fn default() -> Self {
-        Self {
-            region: None,
-            output: None,
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            sso: SsoConfig::default(),
-            ui: UiConfig::default(),
-            profile_defaults: ProfileDefaults::default(),
-        }
-    }
 }
 
 impl Config {

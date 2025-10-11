@@ -38,7 +38,7 @@ pub async fn execute(
     let auth = AuthManager::new()?;
     let token = auth
         .get_cached_token(&instance)?
-        .ok_or_else(|| SsoError::NoSessionFound)?;
+        .ok_or(SsoError::NoSessionFound)?;
 
     if token.is_expired() {
         return Err(SsoError::TokenExpired);

@@ -110,11 +110,11 @@ impl App {
 
     pub async fn run(&mut self) -> Result<()> {
         // Setup terminal
-        enable_raw_mode().map_err(|e| SsoError::Io(e))?;
+        enable_raw_mode().map_err(SsoError::Io)?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| SsoError::Io(e))?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(SsoError::Io)?;
         let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend).map_err(|e| SsoError::Io(e))?;
+        let mut terminal = Terminal::new(backend).map_err(SsoError::Io)?;
 
         // Try to load existing SSO token
         self.load_sso_session().await;
@@ -123,14 +123,14 @@ impl App {
         let result = self.run_event_loop(&mut terminal).await;
 
         // Restore terminal
-        disable_raw_mode().map_err(|e| SsoError::Io(e))?;
+        disable_raw_mode().map_err(SsoError::Io)?;
         execute!(
             terminal.backend_mut(),
             LeaveAlternateScreen,
             DisableMouseCapture
         )
-        .map_err(|e| SsoError::Io(e))?;
-        terminal.show_cursor().map_err(|e| SsoError::Io(e))?;
+        .map_err(SsoError::Io)?;
+        terminal.show_cursor().map_err(SsoError::Io)?;
 
         result
     }
@@ -140,10 +140,10 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
         loop {
-            terminal.draw(|f| self.ui(f)).map_err(|e| SsoError::Io(e))?;
+            terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
 
-            if event::poll(std::time::Duration::from_millis(250)).map_err(|e| SsoError::Io(e))? {
-                if let Event::Key(key) = event::read().map_err(|e| SsoError::Io(e))? {
+            if event::poll(std::time::Duration::from_millis(250)).map_err(SsoError::Io)? {
+                if let Event::Key(key) = event::read().map_err(SsoError::Io)? {
                     // Only handle key press events, ignore key release
                     if key.kind == KeyEventKind::Press {
                         // Check for Ctrl+C
@@ -784,6 +784,7 @@ impl App {
                     let statuses = crate::aws_config::list_profile_statuses().unwrap_or_default();
 
                     // Build a map from (account_id, role_name) to (is_active, expiration, is_default)
+                    #[allow(clippy::type_complexity)]
                     let mut profile_map: HashMap<
                         (String, String),
                         (bool, Option<chrono::DateTime<chrono::Utc>>, bool),

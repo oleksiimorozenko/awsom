@@ -28,7 +28,7 @@ pub async fn execute(
     let auth = AuthManager::new()?;
     let token = auth
         .get_cached_token(&instance)?
-        .ok_or_else(|| SsoError::NoSessionFound)?;
+        .ok_or(SsoError::NoSessionFound)?;
 
     if token.is_expired() {
         return Err(SsoError::TokenExpired);
@@ -75,7 +75,7 @@ pub async fn execute(
         .env("AWS_REGION", &instance.region)
         .env("AWS_DEFAULT_REGION", &instance.region)
         .status()
-        .map_err(|e| SsoError::Io(e))?;
+        .map_err(SsoError::Io)?;
 
     // Exit with same code as the command
     if !status.success() {
