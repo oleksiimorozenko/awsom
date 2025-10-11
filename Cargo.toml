@@ -57,7 +57,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webbrowser = "1.0"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 sha2 = "0.10"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 urlencoding = "2.1"
 
 [dev-dependencies]
