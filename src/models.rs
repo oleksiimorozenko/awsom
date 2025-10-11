@@ -166,3 +166,153 @@ impl SessionStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn test_sso_instance_equality() {
+        let instance1 = SsoInstance {
+            start_url: "https://example.awsapps.com/start".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        let instance2 = SsoInstance {
+            start_url: "https://example.awsapps.com/start".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        assert_eq!(instance1, instance2);
+    }
+
+    #[test]
+    fn test_sso_token_is_expired() {
+        let expired_token = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() - Duration::hours(1),
+            refresh_token: None,
+            region: None,
+        };
+        assert!(expired_token.is_expired());
+
+        let valid_token = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_token: None,
+            region: None,
+        };
+        assert!(!valid_token.is_expired());
+    }
+
+    #[test]
+    fn test_sso_token_expiration_display() {
+        let token = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::minutes(90),
+            refresh_token: None,
+            region: None,
+        };
+        let display = token.expiration_display();
+        assert!(display.contains("1h"));
+
+        let expired = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() - Duration::minutes(10),
+            refresh_token: None,
+            region: None,
+        };
+        assert_eq!(expired.expiration_display(), "EXPIRED");
+    }
+
+    #[test]
+    fn test_account_role_display() {
+        let role = AccountRole {
+            account_id: "123456789012".to_string(),
+            account_name: "Production".to_string(),
+            role_name: "Developer".to_string(),
+        };
+        assert_eq!(role.display_name(), "Production/Developer");
+        assert_eq!(
+            role.full_display(),
+            "Production (123456789012): Developer"
+        );
+    }
+
+    #[test]
+    fn test_role_credentials_expiration() {
+        let creds = RoleCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::minutes(30),
+        };
+        assert!(!creds.is_expired());
+        assert!(creds.expires_in_minutes() > 0);
+    }
+
+    #[test]
+    fn test_session_status() {
+        assert_eq!(SessionStatus::Active.as_str(), "ACTIVE");
+        assert_eq!(SessionStatus::Expiring.as_str(), "EXPIRING");
+        assert_eq!(SessionStatus::Expired.as_str(), "EXPIRED");
+        assert_eq!(SessionStatus::Inactive.as_str(), "INACTIVE");
+    }
+
+    #[test]
+    fn test_profile_session_status() {
+        let instance = SsoInstance {
+            start_url: "https://example.awsapps.com/start".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        let role = AccountRole {
+            account_id: "123456789012".to_string(),
+            account_name: "Test".to_string(),
+            role_name: "Admin".to_string(),
+        };
+
+        // Test inactive session (no credentials)
+        let inactive_session = ProfileSession {
+            profile_name: "test".to_string(),
+            account_role: role.clone(),
+            credentials: None,
+            is_default: false,
+            sso_instance: instance.clone(),
+        };
+        assert!(!inactive_session.is_active());
+        assert_eq!(inactive_session.status(), SessionStatus::Inactive);
+
+        // Test active session
+        let active_creds = RoleCredentials {
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::hours(1),
+        };
+        let active_session = ProfileSession {
+            profile_name: "test".to_string(),
+            account_role: role.clone(),
+            credentials: Some(active_creds),
+            is_default: false,
+            sso_instance: instance.clone(),
+        };
+        assert!(active_session.is_active());
+        assert_eq!(active_session.status(), SessionStatus::Active);
+
+        // Test expiring session
+        let expiring_creds = RoleCredentials {
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::minutes(3),
+        };
+        let expiring_session = ProfileSession {
+            profile_name: "test".to_string(),
+            account_role: role,
+            credentials: Some(expiring_creds),
+            is_default: false,
+            sso_instance: instance,
+        };
+        assert!(expiring_session.is_active());
+        assert_eq!(expiring_session.status(), SessionStatus::Expiring);
+    }
+}

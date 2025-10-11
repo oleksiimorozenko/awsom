@@ -1,5 +1,11 @@
 # awsom
 
+[![CI](https://github.com/oleksiimorozenko/awsom/actions/workflows/ci.yml/badge.svg)](https://github.com/oleksiimorozenko/awsom/actions/workflows/ci.yml)
+[![Release](https://github.com/oleksiimorozenko/awsom/actions/workflows/release.yml/badge.svg)](https://github.com/oleksiimorozenko/awsom/actions/workflows/release.yml)
+[![Crates.io](https://img.shields.io/crates/v/awsom.svg)](https://crates.io/crates/awsom)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust Version](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
+
 **AWS Organization Manager** - The awesome way to manage AWS SSO sessions.
 
 A modern, k9s-inspired Terminal User Interface (TUI) for managing AWS SSO sessions written in Rust.
@@ -20,15 +26,52 @@ A modern, k9s-inspired Terminal User Interface (TUI) for managing AWS SSO sessio
 
 ## Installation
 
+### Using Cargo (Recommended)
+
+Install from [crates.io](https://crates.io/crates/awsom):
+
+```bash
+cargo install awsom
+```
+
+### Using Homebrew (macOS/Linux)
+
+```bash
+brew install oleksiimorozenko/tap/awsom
+```
+
+### Download Pre-built Binaries
+
+Download the latest release for your platform from the [releases page](https://github.com/oleksiimorozenko/awsom/releases):
+
+- **Linux (x86_64)**: `awsom-linux-amd64.tar.gz`
+- **Linux (ARM64)**: `awsom-linux-arm64.tar.gz`
+- **macOS (Intel)**: `awsom-macos-amd64.tar.gz`
+- **macOS (Apple Silicon)**: `awsom-macos-arm64.tar.gz`
+- **Windows (x86_64)**: `awsom-windows-amd64.zip`
+
+After downloading, extract and verify the checksum:
+
+```bash
+# Example for Linux x86_64
+tar xzf awsom-linux-amd64.tar.gz
+sha256sum -c awsom-linux-amd64.tar.gz.sha256
+
+# Move to PATH
+sudo mv awsom /usr/local/bin/
+```
+
 ### From Source
 
 ```bash
+git clone https://github.com/oleksiimorozenko/awsom.git
+cd awsom
 cargo install --path .
 ```
 
 ### Prerequisites
 
-- Rust 1.70+ (installed via Homebrew)
+- Rust 1.70+ (for building from source)
 - AWS SSO configured with your organization
 
 ### Shell Completion
