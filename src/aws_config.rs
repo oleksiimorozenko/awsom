@@ -123,6 +123,95 @@ pub fn read_sso_session() -> Result<Option<SsoSession>> {
     Ok(None)
 }
 
+/// Default profile configuration
+#[derive(Debug, Clone)]
+pub struct DefaultConfig {
+    pub region: String,
+    pub output: String,
+}
+
+/// Read [default] section from ~/.aws/config
+pub fn read_default_config() -> Result<Option<DefaultConfig>> {
+    let config_path = config_file_path()?;
+
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
+
+    let mut in_default_section = false;
+    let mut region: Option<String> = None;
+    let mut output: Option<String> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Check for section headers
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_default_section = trimmed == "[default]";
+            continue;
+        }
+
+        if in_default_section && trimmed.contains('=') {
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let key = parts[0].trim();
+                let value = parts[1].trim();
+
+                match key {
+                    "region" => region = Some(value.to_string()),
+                    "output" => output = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if region.is_some() || output.is_some() {
+        Ok(Some(DefaultConfig {
+            region: region.unwrap_or_else(|| "us-east-1".to_string()),
+            output: output.unwrap_or_else(|| "json".to_string()),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Write [default] section to ~/.aws/config
+pub fn write_default_config(config: &DefaultConfig) -> Result<()> {
+    let config_path = config_file_path()?;
+    let aws_dir = config_path
+        .parent()
+        .ok_or_else(|| SsoError::ConfigError("Invalid config path".to_string()))?;
+
+    // Create ~/.aws directory if it doesn't exist
+    if !aws_dir.exists() {
+        fs::create_dir_all(aws_dir).map_err(|e| {
+            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
+        })?;
+    }
+
+    let existing_config = if config_path.exists() {
+        fs::read_to_string(&config_path)
+            .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?
+    } else {
+        String::new()
+    };
+
+    let new_config = update_ini_section(
+        &existing_config,
+        "default",
+        &[("region", &config.region), ("output", &config.output)],
+    );
+
+    fs::write(&config_path, new_config)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+
+    Ok(())
+}
+
 /// Write SSO session to ~/.aws/config
 pub fn write_sso_session(session: &SsoSession) -> Result<()> {
     let config_path = config_file_path()?;

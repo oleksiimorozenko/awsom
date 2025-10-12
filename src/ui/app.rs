@@ -65,6 +65,15 @@ pub struct App {
     sso_region_input: String,
     sso_session_name_input: String,
     sso_input_cursor: usize,
+    /// Default configuration input buffers
+    default_region_input: String,
+    default_output_input: String,
+    default_input_cursor: usize,
+    /// New profile configuration input buffers
+    new_profile_name_input: String,
+    new_profile_region_input: String,
+    new_profile_output_input: String,
+    new_profile_input_cursor: usize,
     /// Last automatic refresh time
     last_auto_refresh: Option<std::time::Instant>,
 }
@@ -83,6 +92,10 @@ enum AppState {
     ProfileInput,
     /// SSO configuration input
     SsoConfigInput { step: SsoConfigStep },
+    /// Default profile configuration input
+    DefaultsConfigInput { step: DefaultsConfigStep },
+    /// New profile configuration input (with region and output)
+    NewProfileConfigInput { step: NewProfileConfigStep },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +103,19 @@ enum SsoConfigStep {
     StartUrl,
     Region,
     SessionName,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum DefaultsConfigStep {
+    Region,
+    Output,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NewProfileConfigStep {
+    ProfileName,
+    Region,
+    Output,
 }
 
 impl App {
@@ -117,6 +143,13 @@ impl App {
             sso_region_input: String::new(),
             sso_session_name_input: "default-sso".to_string(),
             sso_input_cursor: 0,
+            default_region_input: "us-east-1".to_string(),
+            default_output_input: "json".to_string(),
+            default_input_cursor: 0,
+            new_profile_name_input: String::new(),
+            new_profile_region_input: String::new(),
+            new_profile_output_input: String::new(),
+            new_profile_input_cursor: 0,
             last_auto_refresh: None,
         })
     }
@@ -218,6 +251,12 @@ impl App {
             }
             AppState::SsoConfigInput { .. } => {
                 self.handle_sso_config_input_key(key).await?;
+            }
+            AppState::DefaultsConfigInput { .. } => {
+                self.handle_defaults_config_input_key(key).await?;
+            }
+            AppState::NewProfileConfigInput { .. } => {
+                self.handle_new_profile_config_input_key(key).await?;
             }
         }
         Ok(())
@@ -364,20 +403,53 @@ impl App {
                     // Check if there's an existing profile name for this role
                     let existing_profile = crate::aws_config::get_existing_profile_name(&account)?;
 
-                    let profile_name = if let Some(ref existing) = existing_profile {
-                        existing.clone()
+                    if let Some(profile_name) = existing_profile {
+                        // Profile exists, just activate it
+                        self.state = AppState::Loading;
+                        self.save_profile_credentials(&account, &profile_name)
+                            .await?;
                     } else {
-                        // Generate default profile name
-                        format!(
-                            "{}_{}",
-                            account.account_name.replace(" ", "-").to_lowercase(),
-                            account.role_name.replace(" ", "-").to_lowercase()
-                        )
-                    };
-
-                    self.state = AppState::Loading;
-                    self.save_profile_credentials(&account, &profile_name)
-                        .await?;
+                        // First time creating profile for this role
+                        // Check if [default] section exists
+                        match crate::aws_config::read_default_config()? {
+                            Some(defaults) => {
+                                // Defaults exist, show new profile config dialog
+                                let default_profile_name = format!(
+                                    "{}_{}",
+                                    account
+                                        .account_name
+                                        .replace(" ", "-")
+                                        .replace("_", "-")
+                                        .to_lowercase(),
+                                    account
+                                        .role_name
+                                        .replace(" ", "-")
+                                        .replace("_", "-")
+                                        .to_lowercase()
+                                );
+                                self.new_profile_name_input = default_profile_name;
+                                self.new_profile_region_input = defaults.region.clone();
+                                self.new_profile_output_input = defaults.output.clone();
+                                self.new_profile_input_cursor = self.new_profile_name_input.len();
+                                self.pending_role = Some(account);
+                                self.state = AppState::NewProfileConfigInput {
+                                    step: NewProfileConfigStep::ProfileName,
+                                };
+                                self.status_message =
+                                    Some("Configure profile for this role".to_string());
+                            }
+                            None => {
+                                // No defaults, show defaults config dialog first
+                                self.pending_role = Some(account);
+                                self.state = AppState::DefaultsConfigInput {
+                                    step: DefaultsConfigStep::Region,
+                                };
+                                self.status_message = Some(
+                                    "No [default] section found. Let's configure default settings first!".to_string()
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -699,6 +771,303 @@ impl App {
         Ok(())
     }
 
+    async fn handle_defaults_config_input_key(&mut self, key: KeyCode) -> Result<()> {
+        let current_step = if let AppState::DefaultsConfigInput { step } = &self.state {
+            step.clone()
+        } else {
+            return Ok(());
+        };
+
+        match key {
+            KeyCode::Enter => {
+                match current_step {
+                    DefaultsConfigStep::Region => {
+                        if self.default_region_input.trim().is_empty() {
+                            self.status_message = Some("Region is required".to_string());
+                        } else {
+                            self.state = AppState::DefaultsConfigInput {
+                                step: DefaultsConfigStep::Output,
+                            };
+                            self.default_input_cursor = self.default_output_input.len();
+                        }
+                    }
+                    DefaultsConfigStep::Output => {
+                        // Save default configuration
+                        let config = crate::aws_config::DefaultConfig {
+                            region: self.default_region_input.trim().to_string(),
+                            output: self.default_output_input.trim().to_string(),
+                        };
+
+                        match crate::aws_config::write_default_config(&config) {
+                            Ok(()) => {
+                                self.status_message = Some(
+                                    "✓ Default configuration saved to ~/.aws/config".to_string(),
+                                );
+
+                                // Now proceed to new profile configuration
+                                if let Some(account) = &self.pending_role {
+                                    let default_profile_name = format!(
+                                        "{}_{}",
+                                        account
+                                            .account_name
+                                            .replace(" ", "-")
+                                            .replace("_", "-")
+                                            .to_lowercase(),
+                                        account
+                                            .role_name
+                                            .replace(" ", "-")
+                                            .replace("_", "-")
+                                            .to_lowercase()
+                                    );
+                                    self.new_profile_name_input = default_profile_name;
+                                    self.new_profile_region_input = config.region.clone();
+                                    self.new_profile_output_input = config.output.clone();
+                                    self.new_profile_input_cursor =
+                                        self.new_profile_name_input.len();
+                                    self.state = AppState::NewProfileConfigInput {
+                                        step: NewProfileConfigStep::ProfileName,
+                                    };
+                                }
+
+                                // Clear input buffers
+                                self.default_region_input = "us-east-1".to_string();
+                                self.default_output_input = "json".to_string();
+                                self.default_input_cursor = 0;
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("Error saving defaults: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                self.state = AppState::Main;
+                self.default_region_input = "us-east-1".to_string();
+                self.default_output_input = "json".to_string();
+                self.default_input_cursor = 0;
+                self.pending_role = None;
+                self.status_message = Some("Configuration cancelled".to_string());
+            }
+            KeyCode::Left => {
+                if self.default_input_cursor > 0 {
+                    self.default_input_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let max_len = match current_step {
+                    DefaultsConfigStep::Region => self.default_region_input.len(),
+                    DefaultsConfigStep::Output => self.default_output_input.len(),
+                };
+                if self.default_input_cursor < max_len {
+                    self.default_input_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.default_input_cursor = 0;
+            }
+            KeyCode::End => {
+                self.default_input_cursor = match current_step {
+                    DefaultsConfigStep::Region => self.default_region_input.len(),
+                    DefaultsConfigStep::Output => self.default_output_input.len(),
+                };
+            }
+            KeyCode::Backspace => {
+                if self.default_input_cursor > 0 {
+                    match current_step {
+                        DefaultsConfigStep::Region => {
+                            self.default_region_input
+                                .remove(self.default_input_cursor - 1);
+                        }
+                        DefaultsConfigStep::Output => {
+                            self.default_output_input
+                                .remove(self.default_input_cursor - 1);
+                        }
+                    }
+                    self.default_input_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => match current_step {
+                DefaultsConfigStep::Region => {
+                    if self.default_input_cursor < self.default_region_input.len() {
+                        self.default_region_input.remove(self.default_input_cursor);
+                    }
+                }
+                DefaultsConfigStep::Output => {
+                    if self.default_input_cursor < self.default_output_input.len() {
+                        self.default_output_input.remove(self.default_input_cursor);
+                    }
+                }
+            },
+            KeyCode::Char(c) => match current_step {
+                DefaultsConfigStep::Region => {
+                    if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                        self.default_region_input
+                            .insert(self.default_input_cursor, c);
+                        self.default_input_cursor += 1;
+                    }
+                }
+                DefaultsConfigStep::Output => {
+                    if c.is_alphanumeric() || c == '-' {
+                        self.default_output_input
+                            .insert(self.default_input_cursor, c);
+                        self.default_input_cursor += 1;
+                    }
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_new_profile_config_input_key(&mut self, key: KeyCode) -> Result<()> {
+        let current_step = if let AppState::NewProfileConfigInput { step } = &self.state {
+            step.clone()
+        } else {
+            return Ok(());
+        };
+
+        match key {
+            KeyCode::Enter => {
+                match current_step {
+                    NewProfileConfigStep::ProfileName => {
+                        if self.new_profile_name_input.trim().is_empty() {
+                            self.status_message = Some("Profile name is required".to_string());
+                        } else {
+                            self.state = AppState::NewProfileConfigInput {
+                                step: NewProfileConfigStep::Region,
+                            };
+                            self.new_profile_input_cursor = self.new_profile_region_input.len();
+                        }
+                    }
+                    NewProfileConfigStep::Region => {
+                        if self.new_profile_region_input.trim().is_empty() {
+                            self.status_message = Some("Region is required".to_string());
+                        } else {
+                            self.state = AppState::NewProfileConfigInput {
+                                step: NewProfileConfigStep::Output,
+                            };
+                            self.new_profile_input_cursor = self.new_profile_output_input.len();
+                        }
+                    }
+                    NewProfileConfigStep::Output => {
+                        // Save the profile with credentials
+                        if let Some(account) = self.pending_role.take() {
+                            let profile_name = self.new_profile_name_input.trim().to_string();
+                            self.state = AppState::Loading;
+                            self.save_profile_credentials(&account, &profile_name)
+                                .await?;
+
+                            // Clear input buffers
+                            self.new_profile_name_input.clear();
+                            self.new_profile_region_input.clear();
+                            self.new_profile_output_input.clear();
+                            self.new_profile_input_cursor = 0;
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                self.state = AppState::Main;
+                self.new_profile_name_input.clear();
+                self.new_profile_region_input.clear();
+                self.new_profile_output_input.clear();
+                self.new_profile_input_cursor = 0;
+                self.pending_role = None;
+                self.status_message = Some("Profile configuration cancelled".to_string());
+            }
+            KeyCode::Left => {
+                if self.new_profile_input_cursor > 0 {
+                    self.new_profile_input_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let max_len = match current_step {
+                    NewProfileConfigStep::ProfileName => self.new_profile_name_input.len(),
+                    NewProfileConfigStep::Region => self.new_profile_region_input.len(),
+                    NewProfileConfigStep::Output => self.new_profile_output_input.len(),
+                };
+                if self.new_profile_input_cursor < max_len {
+                    self.new_profile_input_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.new_profile_input_cursor = 0;
+            }
+            KeyCode::End => {
+                self.new_profile_input_cursor = match current_step {
+                    NewProfileConfigStep::ProfileName => self.new_profile_name_input.len(),
+                    NewProfileConfigStep::Region => self.new_profile_region_input.len(),
+                    NewProfileConfigStep::Output => self.new_profile_output_input.len(),
+                };
+            }
+            KeyCode::Backspace => {
+                if self.new_profile_input_cursor > 0 {
+                    match current_step {
+                        NewProfileConfigStep::ProfileName => {
+                            self.new_profile_name_input
+                                .remove(self.new_profile_input_cursor - 1);
+                        }
+                        NewProfileConfigStep::Region => {
+                            self.new_profile_region_input
+                                .remove(self.new_profile_input_cursor - 1);
+                        }
+                        NewProfileConfigStep::Output => {
+                            self.new_profile_output_input
+                                .remove(self.new_profile_input_cursor - 1);
+                        }
+                    }
+                    self.new_profile_input_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => match current_step {
+                NewProfileConfigStep::ProfileName => {
+                    if self.new_profile_input_cursor < self.new_profile_name_input.len() {
+                        self.new_profile_name_input
+                            .remove(self.new_profile_input_cursor);
+                    }
+                }
+                NewProfileConfigStep::Region => {
+                    if self.new_profile_input_cursor < self.new_profile_region_input.len() {
+                        self.new_profile_region_input
+                            .remove(self.new_profile_input_cursor);
+                    }
+                }
+                NewProfileConfigStep::Output => {
+                    if self.new_profile_input_cursor < self.new_profile_output_input.len() {
+                        self.new_profile_output_input
+                            .remove(self.new_profile_input_cursor);
+                    }
+                }
+            },
+            KeyCode::Char(c) => match current_step {
+                NewProfileConfigStep::ProfileName => {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        self.new_profile_name_input
+                            .insert(self.new_profile_input_cursor, c);
+                        self.new_profile_input_cursor += 1;
+                    }
+                }
+                NewProfileConfigStep::Region => {
+                    if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                        self.new_profile_region_input
+                            .insert(self.new_profile_input_cursor, c);
+                        self.new_profile_input_cursor += 1;
+                    }
+                }
+                NewProfileConfigStep::Output => {
+                    if c.is_alphanumeric() || c == '-' {
+                        self.new_profile_output_input
+                            .insert(self.new_profile_input_cursor, c);
+                        self.new_profile_input_cursor += 1;
+                    }
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn save_profile_credentials(
         &mut self,
         account: &AccountRole,
@@ -735,9 +1104,18 @@ impl App {
                 .await
             {
                 Ok(creds) => {
-                    // Use SSO region as default
-                    let profile_region = &instance.region;
-                    let output_format = sso_config::get_default_output_format();
+                    // Use region and output from new profile config if available, otherwise defaults
+                    let profile_region = if !self.new_profile_region_input.is_empty() {
+                        &self.new_profile_region_input
+                    } else {
+                        &instance.region
+                    };
+
+                    let output_format = if !self.new_profile_output_input.is_empty() {
+                        Some(self.new_profile_output_input.as_str())
+                    } else {
+                        sso_config::get_default_output_format()
+                    };
 
                     // Write to AWS credentials file with metadata
                     match crate::aws_config::write_credentials_with_metadata(
@@ -1151,6 +1529,12 @@ impl App {
             AppState::Error(msg) => self.draw_error_screen(f, msg.clone()),
             AppState::ProfileInput => self.draw_profile_input_screen(f),
             AppState::SsoConfigInput { step } => self.draw_sso_config_input_screen(f, step.clone()),
+            AppState::DefaultsConfigInput { step } => {
+                self.draw_defaults_config_input_screen(f, step.clone())
+            }
+            AppState::NewProfileConfigInput { step } => {
+                self.draw_new_profile_config_input_screen(f, step.clone())
+            }
         }
     }
 
@@ -1560,6 +1944,187 @@ impl App {
             "█".to_string()
         } else {
             let (before, after) = current_input.split_at(self.sso_input_cursor);
+            format!("{}█{}", before, after)
+        };
+
+        let input = Paragraph::new(input_with_cursor.as_str())
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL).title(field_label));
+        f.render_widget(input, chunks[2]);
+
+        // Help
+        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
+            .style(Style::default().fg(Color::Gray));
+        f.render_widget(help, chunks[4]);
+    }
+
+    fn draw_defaults_config_input_screen(&self, f: &mut Frame, step: DefaultsConfigStep) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // Title
+                Constraint::Length(10), // Instructions
+                Constraint::Length(3),  // Input
+                Constraint::Min(0),     // Spacer
+                Constraint::Length(2),  // Help
+            ])
+            .split(f.area());
+
+        // Title
+        let title = Paragraph::new("Configure Default Profile Settings")
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(title, chunks[0]);
+
+        // Instructions
+        let (step_title, instructions, example) = match step {
+            DefaultsConfigStep::Region => (
+                "Step 1 of 2: Default Region",
+                "Enter the default AWS region for new profiles",
+                "Example: us-east-1, eu-west-1, ap-southeast-2",
+            ),
+            DefaultsConfigStep::Output => (
+                "Step 2 of 2: Default Output Format",
+                "Enter the default output format for AWS CLI",
+                "Options: json, text, table, yaml",
+            ),
+        };
+
+        let info_text = vec![
+            Line::from(Span::styled(
+                step_title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(instructions),
+            Line::from(""),
+            Line::from(Span::styled(example, Style::default().fg(Color::Gray))),
+            Line::from(""),
+            Line::from("These settings will be saved to ~/.aws/config as:"),
+            Line::from("[default]"),
+        ];
+
+        let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));
+        f.render_widget(info, chunks[1]);
+
+        // Input field
+        let (current_input, field_label) = match step {
+            DefaultsConfigStep::Region => (&self.default_region_input, "Default Region"),
+            DefaultsConfigStep::Output => (&self.default_output_input, "Default Output Format"),
+        };
+
+        let input_with_cursor = if current_input.is_empty() {
+            "█".to_string()
+        } else {
+            let (before, after) = current_input.split_at(self.default_input_cursor);
+            format!("{}█{}", before, after)
+        };
+
+        let input = Paragraph::new(input_with_cursor.as_str())
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL).title(field_label));
+        f.render_widget(input, chunks[2]);
+
+        // Help
+        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
+            .style(Style::default().fg(Color::Gray));
+        f.render_widget(help, chunks[4]);
+    }
+
+    fn draw_new_profile_config_input_screen(&self, f: &mut Frame, step: NewProfileConfigStep) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // Title
+                Constraint::Length(12), // Instructions
+                Constraint::Length(3),  // Input
+                Constraint::Min(0),     // Spacer
+                Constraint::Length(2),  // Help
+            ])
+            .split(f.area());
+
+        // Title
+        let title = Paragraph::new("Configure New AWS Profile")
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(title, chunks[0]);
+
+        // Instructions
+        let (step_title, instructions, example) = match step {
+            NewProfileConfigStep::ProfileName => (
+                "Step 1 of 3: Profile Name",
+                "Enter a name for this AWS profile",
+                "Example: my-prod-account, dev-readonly",
+            ),
+            NewProfileConfigStep::Region => (
+                "Step 2 of 3: Region",
+                "Enter the AWS region for this profile",
+                "Example: us-east-1, eu-west-1, ap-southeast-2",
+            ),
+            NewProfileConfigStep::Output => (
+                "Step 3 of 3: Output Format",
+                "Enter the output format for AWS CLI",
+                "Options: json, text, table, yaml",
+            ),
+        };
+
+        let info_text = vec![
+            Line::from(Span::styled(
+                step_title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(instructions),
+            Line::from(""),
+            Line::from(Span::styled(example, Style::default().fg(Color::Gray))),
+            Line::from(""),
+            Line::from("The profile will be saved to ~/.aws/config and"),
+            Line::from("credentials will be written to ~/.aws/credentials"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "After configuration, credentials will be fetched automatically.",
+                Style::default().fg(Color::Green),
+            )),
+        ];
+
+        let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));
+        f.render_widget(info, chunks[1]);
+
+        // Input field
+        let (current_input, field_label, cursor_pos) = match step {
+            NewProfileConfigStep::ProfileName => (
+                &self.new_profile_name_input,
+                "Profile Name",
+                self.new_profile_input_cursor,
+            ),
+            NewProfileConfigStep::Region => (
+                &self.new_profile_region_input,
+                "Region",
+                self.new_profile_input_cursor,
+            ),
+            NewProfileConfigStep::Output => (
+                &self.new_profile_output_input,
+                "Output Format",
+                self.new_profile_input_cursor,
+            ),
+        };
+
+        let input_with_cursor = if current_input.is_empty() {
+            "█".to_string()
+        } else {
+            let (before, after) = current_input.split_at(cursor_pos);
             format!("{}█{}", before, after)
         };
 
