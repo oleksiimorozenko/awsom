@@ -45,22 +45,36 @@ pub struct ProfileDefaults {
 }
 
 impl Config {
-    /// Get the config directory path following XDG Base Directory spec
+    /// Get the config directory path
+    ///
+    /// Priority:
+    /// 1. XDG_CONFIG_HOME/awsom (if env var is set)
+    /// 2. ~/.config/awsom (if ~/.config exists)
+    /// 3. ~/.awsom (fallback on Unix, doesn't create ~/.config)
+    /// 4. Platform default on Windows
     pub fn config_dir() -> Result<PathBuf> {
-        // First, check XDG_CONFIG_HOME environment variable
+        // First, check XDG_CONFIG_HOME environment variable (explicit opt-in)
         if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
             return Ok(PathBuf::from(xdg_config).join("awsom"));
         }
 
-        // On Unix-like systems (Linux, macOS), prefer ~/.config
+        // On Unix-like systems (Linux, macOS), detect existing structure
         #[cfg(unix)]
         {
             if let Some(home_dir) = dirs::home_dir() {
-                return Ok(home_dir.join(".config").join("awsom"));
+                let xdg_config = home_dir.join(".config");
+
+                // If ~/.config exists, use it (user has adopted XDG)
+                if xdg_config.exists() {
+                    return Ok(xdg_config.join("awsom"));
+                }
+
+                // Otherwise, use ~/.awsom (don't create ~/.config for users)
+                return Ok(home_dir.join(".awsom"));
             }
         }
 
-        // Fall back to platform-specific default for Windows or if home_dir fails
+        // Fall back to platform-specific default for Windows
         #[cfg(not(unix))]
         {
             if let Some(config_dir) = dirs::config_dir() {
@@ -157,7 +171,11 @@ impl Config {
         }
 
         let sample_config = r#"# AWS SSO TUI Configuration
-# This file is located at: ~/.config/awsom/config.toml (XDG_CONFIG_HOME)
+# Location priority:
+#   1. $XDG_CONFIG_HOME/awsom/config.toml (if XDG_CONFIG_HOME is set)
+#   2. ~/.config/awsom/config.toml (if ~/.config exists)
+#   3. ~/.awsom/config.toml (fallback)
+#
 # You can also set these values via environment variables:
 #   AWS_SSO_START_URL
 #   AWS_SSO_REGION

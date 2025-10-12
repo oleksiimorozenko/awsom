@@ -345,10 +345,15 @@ awsom config path
 
 ### Config File
 
-awsom uses a TOML configuration file following the XDG Base Directory specification:
+awsom uses a TOML configuration file with automatic location detection:
 
-- **Location**: `~/.config/awsom/config.toml` (or `$XDG_CONFIG_HOME/awsom/config.toml`)
-- **Windows**: `%APPDATA%\awsom\config.toml`
+**Location Priority (Unix/macOS):**
+1. `$XDG_CONFIG_HOME/awsom/config.toml` (if `XDG_CONFIG_HOME` is set)
+2. `~/.config/awsom/config.toml` (if `~/.config` directory exists)
+3. `~/.awsom/config.toml` (fallback, doesn't create `~/.config` for you)
+
+**Windows:**
+- `%APPDATA%\awsom\config.toml`
 
 #### Creating a Config File
 
@@ -390,13 +395,13 @@ Environment variables take precedence over config file values:
 
 - `AWS_SSO_START_URL`: SSO start URL (overrides config file)
 - `AWS_SSO_REGION`: SSO region (overrides config file)
-- `XDG_CONFIG_HOME`: Custom config directory location (default: `~/.config`)
+- `XDG_CONFIG_HOME`: Force config directory to `$XDG_CONFIG_HOME/awsom`
 
 ### Configuration Priority
 
 Settings are loaded in this order (later sources override earlier ones):
 
-1. Config file (`~/.config/awsom/config.toml`)
+1. Config file (see location priority above)
 2. Environment variables (`AWS_SSO_START_URL`, `AWS_SSO_REGION`)
 3. CLI flags (`--start-url`, `--region`)
 
