@@ -1,9 +1,9 @@
 // Main TUI application
 use crate::auth::{AuthManager, DeviceAuthorizationInfo};
-use crate::config::Config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance, SsoToken};
+use crate::sso_config;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -44,8 +44,6 @@ pub struct App {
     auth_manager: AuthManager,
     /// Credential manager
     credential_manager: CredentialManager,
-    /// Configuration
-    config: Config,
     /// Current SSO instance
     sso_instance: Option<SsoInstance>,
     /// Current SSO token (if logged in)
@@ -85,9 +83,6 @@ impl App {
         let auth_manager = AuthManager::new()?;
         let credential_manager = CredentialManager::new()?;
 
-        // Load configuration
-        let config = Config::load()?;
-
         Ok(Self {
             should_quit: false,
             state: AppState::Main,
@@ -95,7 +90,6 @@ impl App {
             list_state: ListState::default(),
             auth_manager,
             credential_manager,
-            config,
             sso_instance: None,
             sso_token: None,
             status_message: None,
@@ -529,14 +523,9 @@ impl App {
                 .await
             {
                 Ok(creds) => {
-                    // Use profile defaults for region and output format
-                    let profile_region = self
-                        .config
-                        .profile_defaults
-                        .region
-                        .as_deref()
-                        .unwrap_or(&instance.region);
-                    let output_format = self.config.profile_defaults.output.as_deref();
+                    // Use SSO region as default
+                    let profile_region = &instance.region;
+                    let output_format = sso_config::get_default_output_format();
 
                     // Write to AWS credentials file with metadata
                     match crate::aws_config::write_credentials_with_metadata(
@@ -585,16 +574,11 @@ impl App {
     }
 
     async fn login(&mut self) -> Result<()> {
-        // Check if config is complete
-        if !self.config.is_complete() {
-            let config_path = Config::config_file_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "~/.config/awsom/config.toml".to_string());
-
-            self.state = AppState::Error(format!(
-                "SSO not configured. Please edit config file:\n\n  {}\n\nOr set environment variables:\n  AWS_SSO_START_URL\n  AWS_SSO_REGION\n\nTo create a sample config:\n  awsom config init",
-                config_path
-            ));
+        // Check if SSO config is available
+        if !sso_config::has_sso_config(None, None) {
+            self.state = AppState::Error(
+                "SSO not configured. Please configure [sso-session] in:\n\n  ~/.aws/config\n\nOr set environment variables:\n  AWS_SSO_START_URL\n  AWS_SSO_REGION".to_string()
+            );
             return Ok(());
         }
 
@@ -602,7 +586,7 @@ impl App {
         self.status_message = Some("Logging in to AWS SSO...".to_string());
 
         // Get SSO config
-        let (start_url, region) = match self.config.get_sso_config() {
+        let (start_url, region) = match sso_config::get_sso_config(None, None) {
             Ok(config) => config,
             Err(e) => {
                 self.state = AppState::Error(format!("Config error: {}", e));
@@ -688,17 +672,16 @@ impl App {
     async fn load_sso_session(&mut self) {
         self.status_message = Some("Checking for existing SSO session...".to_string());
 
-        // Check if config is complete
-        if !self.config.is_complete() {
-            self.status_message = Some(format!(
-                "Config incomplete. Press 'l' to login or edit config at: {}",
-                Config::config_file_path().unwrap_or_default().display()
-            ));
+        // Check if SSO config is available
+        if !sso_config::has_sso_config(None, None) {
+            self.status_message = Some(
+                "SSO not configured. Press 'l' to login or configure [sso-session] in ~/.aws/config".to_string()
+            );
             return;
         }
 
         // Get SSO config
-        let (start_url, region) = match self.config.get_sso_config() {
+        let (start_url, region) = match sso_config::get_sso_config(None, None) {
             Ok(config) => config,
             Err(e) => {
                 self.status_message = Some(format!("Config error: {}", e));
@@ -918,13 +901,8 @@ impl App {
                         .await
                     {
                         Ok(creds) => {
-                            // Use configured region or SSO region
-                            let region = self
-                                .config
-                                .profile_defaults
-                                .region
-                                .as_deref()
-                                .or(Some(instance.region.as_str()));
+                            // Use SSO region as default
+                            let region = Some(instance.region.as_str());
 
                             match crate::console::open_console(&creds, region) {
                                 Ok(()) => {

@@ -130,20 +130,6 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
-
-    /// Manage configuration
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ConfigCommand {
-    /// Initialize a new config file with sample values
-    Init,
-    /// Show the current config file path
-    Path,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -188,7 +174,6 @@ pub async fn execute(args: Cli) -> Result<()> {
             commands::completions::execute(shell);
             Ok(())
         }
-        Some(Commands::Config { command }) => commands::config::execute(command).await,
         None => {
             // No command specified, launch TUI
             use crate::ui::App;
