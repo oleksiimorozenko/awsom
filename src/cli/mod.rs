@@ -108,6 +108,23 @@ pub enum Commands {
     Logout,
 
     /// Generate shell completion scripts
+    ///
+    /// INSTALLATION:
+    ///
+    /// Bash:
+    ///   eval "$(awsom completions bash)"    # Add to ~/.bashrc
+    ///
+    /// Zsh:
+    ///   eval "$(awsom completions zsh)"     # Add to ~/.zshrc
+    ///
+    /// Fish:
+    ///   awsom completions fish > ~/.config/fish/completions/awsom.fish
+    ///
+    /// PowerShell:
+    ///   awsom completions powershell | Out-String | Invoke-Expression
+    ///
+    /// Elvish:
+    ///   eval (awsom completions elvish | slurp)
     Completions {
         /// Shell type to generate completions for
         #[arg(value_enum)]
