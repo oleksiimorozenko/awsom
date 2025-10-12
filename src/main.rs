@@ -10,6 +10,7 @@ mod error;
 mod expiry;
 mod models;
 mod session;
+mod sso_config;
 mod ui;
 
 use clap::Parser;

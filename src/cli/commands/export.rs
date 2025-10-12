@@ -1,8 +1,8 @@
 use crate::auth::AuthManager;
-use crate::config::Config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
+use crate::sso_config;
 
 pub async fn execute(
     account_id: Option<String>,
@@ -10,14 +10,10 @@ pub async fn execute(
     role_name: String,
     profile_name: Option<String>,
 ) -> Result<()> {
-    // Load config
-    let config = Config::load()?;
-    let (start_url, region) = config.get_sso_config()?;
+    // Get SSO config from CLI args, env vars, or ~/.aws/config
+    let (start_url, region) = sso_config::get_sso_config(None, None)?;
 
-    let instance = SsoInstance {
-        start_url: start_url.to_string(),
-        region: region.to_string(),
-    };
+    let instance = SsoInstance { start_url, region };
 
     // Get SSO token
     let auth = AuthManager::new()?;
@@ -63,13 +59,9 @@ pub async fn execute(
 
     // If profile name specified, write to AWS credentials file
     if let Some(profile) = profile_name {
-        // Use profile defaults for region and output format
-        let profile_region = config
-            .profile_defaults
-            .region
-            .as_deref()
-            .unwrap_or(&instance.region);
-        let output_format = config.profile_defaults.output.as_deref();
+        // Use SSO region as default
+        let profile_region = &instance.region;
+        let output_format = sso_config::get_default_output_format();
 
         crate::aws_config::write_credentials(&profile, &creds, profile_region, output_format)?;
         eprintln!("✓ Wrote credentials to ~/.aws/credentials");

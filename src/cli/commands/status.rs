@@ -1,14 +1,11 @@
 use crate::auth::AuthManager;
-use crate::config::Config;
 use crate::error::Result;
 use crate::models::SsoInstance;
+use crate::sso_config;
 
 pub async fn execute(json: bool) -> Result<()> {
-    // Load config
-    let config = Config::load()?;
-
-    // Check if config is complete
-    if !config.is_complete() {
+    // Check if SSO config is available
+    if !sso_config::has_sso_config(None, None) {
         if json {
             println!("{{\"active\":false,\"reason\":\"not_configured\"}}");
         } else {
@@ -17,12 +14,10 @@ pub async fn execute(json: bool) -> Result<()> {
         std::process::exit(1);
     }
 
-    let (start_url, region) = config.get_sso_config()?;
+    // Get SSO config from env vars or ~/.aws/config
+    let (start_url, region) = sso_config::get_sso_config(None, None)?;
 
-    let instance = SsoInstance {
-        start_url: start_url.to_string(),
-        region: region.to_string(),
-    };
+    let instance = SsoInstance { start_url, region };
 
     // Check for cached token
     let auth = AuthManager::new()?;

@@ -1,8 +1,8 @@
 use crate::auth::AuthManager;
-use crate::config::Config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
+use crate::sso_config;
 use std::process::Command;
 
 pub async fn execute(
@@ -15,14 +15,10 @@ pub async fn execute(
         return Err(SsoError::InvalidConfig("No command specified".to_string()));
     }
 
-    // Load config
-    let config = Config::load()?;
-    let (start_url, region) = config.get_sso_config()?;
+    // Get SSO config from CLI args, env vars, or ~/.aws/config
+    let (start_url, region) = sso_config::get_sso_config(None, None)?;
 
-    let instance = SsoInstance {
-        start_url: start_url.to_string(),
-        region: region.to_string(),
-    };
+    let instance = SsoInstance { start_url, region };
 
     // Get SSO token
     let auth = AuthManager::new()?;

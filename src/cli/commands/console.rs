@@ -1,8 +1,8 @@
 use crate::auth::AuthManager;
-use crate::config::Config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
+use crate::sso_config;
 
 pub async fn execute(
     account_id: Option<String>,
@@ -10,13 +10,12 @@ pub async fn execute(
     role_name: String,
     region: Option<String>,
 ) -> Result<()> {
-    // Load config
-    let config = Config::load()?;
-    let (start_url, sso_region) = config.get_sso_config()?;
+    // Get SSO config from CLI args, env vars, or ~/.aws/config
+    let (start_url, sso_region) = sso_config::get_sso_config(None, None)?;
 
     let instance = SsoInstance {
-        start_url: start_url.to_string(),
-        region: sso_region.to_string(),
+        start_url,
+        region: sso_region,
     };
 
     // Get SSO token
@@ -61,11 +60,8 @@ pub async fn execute(
         )
         .await?;
 
-    // Determine which region to use for console
-    let console_region = region
-        .as_deref()
-        .or(config.profile_defaults.region.as_deref())
-        .or(Some(instance.region.as_str()));
+    // Determine which region to use for console (use SSO region as default)
+    let console_region = region.as_deref().or(Some(instance.region.as_str()));
 
     eprintln!("Opening AWS Console in browser...");
     eprintln!("  Account: {}", account_id);
