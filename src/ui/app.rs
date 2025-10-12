@@ -5,9 +5,7 @@ use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance, SsoToken};
 use crate::sso_config;
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    },
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -62,6 +60,11 @@ pub struct App {
     device_auth_info: Option<DeviceAuthorizationInfo>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
+    /// SSO configuration input buffers
+    sso_start_url_input: String,
+    sso_region_input: String,
+    sso_session_name_input: String,
+    sso_input_cursor: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +79,15 @@ enum AppState {
     Error(String),
     /// Profile name input
     ProfileInput,
+    /// SSO configuration input
+    SsoConfigInput { step: SsoConfigStep },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SsoConfigStep {
+    StartUrl,
+    Region,
+    SessionName,
 }
 
 impl App {
@@ -99,6 +111,10 @@ impl App {
             existing_profile_name: None,
             device_auth_info: None,
             last_ctrl_c_time: None,
+            sso_start_url_input: String::new(),
+            sso_region_input: String::new(),
+            sso_session_name_input: "default-sso".to_string(),
+            sso_input_cursor: 0,
         })
     }
 
@@ -106,7 +122,7 @@ impl App {
         // Setup terminal
         enable_raw_mode().map_err(SsoError::Io)?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(SsoError::Io)?;
+        execute!(stdout, EnterAlternateScreen).map_err(SsoError::Io)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(SsoError::Io)?;
 
@@ -118,12 +134,7 @@ impl App {
 
         // Restore terminal
         disable_raw_mode().map_err(SsoError::Io)?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )
-        .map_err(SsoError::Io)?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(SsoError::Io)?;
         terminal.show_cursor().map_err(SsoError::Io)?;
 
         result
@@ -175,6 +186,9 @@ impl App {
             }
             AppState::ProfileInput => {
                 self.handle_profile_input_key(key).await?;
+            }
+            AppState::SsoConfigInput { .. } => {
+                self.handle_sso_config_input_key(key).await?;
             }
         }
         Ok(())
@@ -487,6 +501,173 @@ impl App {
         Ok(())
     }
 
+    async fn handle_sso_config_input_key(&mut self, key: KeyCode) -> Result<()> {
+        let current_step = if let AppState::SsoConfigInput { step } = &self.state {
+            step.clone()
+        } else {
+            return Ok(());
+        };
+
+        match key {
+            KeyCode::Enter => {
+                // Move to next step or save configuration
+                match current_step {
+                    SsoConfigStep::StartUrl => {
+                        if self.sso_start_url_input.trim().is_empty() {
+                            self.status_message = Some("SSO Start URL is required".to_string());
+                        } else {
+                            self.state = AppState::SsoConfigInput {
+                                step: SsoConfigStep::Region,
+                            };
+                            self.sso_input_cursor = self.sso_region_input.len();
+                        }
+                    }
+                    SsoConfigStep::Region => {
+                        if self.sso_region_input.trim().is_empty() {
+                            self.status_message = Some("SSO Region is required".to_string());
+                        } else {
+                            self.state = AppState::SsoConfigInput {
+                                step: SsoConfigStep::SessionName,
+                            };
+                            self.sso_input_cursor = self.sso_session_name_input.len();
+                        }
+                    }
+                    SsoConfigStep::SessionName => {
+                        // Save configuration to ~/.aws/config
+                        let session_name = if self.sso_session_name_input.trim().is_empty() {
+                            "default-sso".to_string()
+                        } else {
+                            self.sso_session_name_input.trim().to_string()
+                        };
+
+                        let session = crate::aws_config::SsoSession {
+                            session_name: session_name.clone(),
+                            sso_start_url: self.sso_start_url_input.trim().to_string(),
+                            sso_region: self.sso_region_input.trim().to_string(),
+                            sso_registration_scopes: "sso:account:access".to_string(),
+                        };
+
+                        match crate::aws_config::write_sso_session(&session) {
+                            Ok(()) => {
+                                self.status_message = Some(format!(
+                                    "✓ SSO configuration saved to ~/.aws/config as [sso-session {}]",
+                                    session_name
+                                ));
+                                self.state = AppState::Main;
+
+                                // Clear input buffers
+                                self.sso_start_url_input.clear();
+                                self.sso_region_input.clear();
+                                self.sso_session_name_input = "default-sso".to_string();
+                                self.sso_input_cursor = 0;
+
+                                // Automatically trigger login
+                                self.login().await?;
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("Error saving configuration: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                // Cancel configuration
+                self.state = AppState::Main;
+                self.sso_start_url_input.clear();
+                self.sso_region_input.clear();
+                self.sso_session_name_input = "default-sso".to_string();
+                self.sso_input_cursor = 0;
+                self.status_message = Some("Configuration cancelled".to_string());
+            }
+            KeyCode::Left => {
+                if self.sso_input_cursor > 0 {
+                    self.sso_input_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let max_len = match current_step {
+                    SsoConfigStep::StartUrl => self.sso_start_url_input.len(),
+                    SsoConfigStep::Region => self.sso_region_input.len(),
+                    SsoConfigStep::SessionName => self.sso_session_name_input.len(),
+                };
+                if self.sso_input_cursor < max_len {
+                    self.sso_input_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.sso_input_cursor = 0;
+            }
+            KeyCode::End => {
+                self.sso_input_cursor = match current_step {
+                    SsoConfigStep::StartUrl => self.sso_start_url_input.len(),
+                    SsoConfigStep::Region => self.sso_region_input.len(),
+                    SsoConfigStep::SessionName => self.sso_session_name_input.len(),
+                };
+            }
+            KeyCode::Backspace => {
+                if self.sso_input_cursor > 0 {
+                    match current_step {
+                        SsoConfigStep::StartUrl => {
+                            self.sso_start_url_input.remove(self.sso_input_cursor - 1);
+                        }
+                        SsoConfigStep::Region => {
+                            self.sso_region_input.remove(self.sso_input_cursor - 1);
+                        }
+                        SsoConfigStep::SessionName => {
+                            self.sso_session_name_input
+                                .remove(self.sso_input_cursor - 1);
+                        }
+                    }
+                    self.sso_input_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => match current_step {
+                SsoConfigStep::StartUrl => {
+                    if self.sso_input_cursor < self.sso_start_url_input.len() {
+                        self.sso_start_url_input.remove(self.sso_input_cursor);
+                    }
+                }
+                SsoConfigStep::Region => {
+                    if self.sso_input_cursor < self.sso_region_input.len() {
+                        self.sso_region_input.remove(self.sso_input_cursor);
+                    }
+                }
+                SsoConfigStep::SessionName => {
+                    if self.sso_input_cursor < self.sso_session_name_input.len() {
+                        self.sso_session_name_input.remove(self.sso_input_cursor);
+                    }
+                }
+            },
+            KeyCode::Char(c) => {
+                // Allow reasonable characters for URLs and region names
+                match current_step {
+                    SsoConfigStep::StartUrl => {
+                        self.sso_start_url_input.insert(self.sso_input_cursor, c);
+                        self.sso_input_cursor += 1;
+                    }
+                    SsoConfigStep::Region => {
+                        // Only allow lowercase letters, digits, and hyphens for region
+                        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                            self.sso_region_input.insert(self.sso_input_cursor, c);
+                            self.sso_input_cursor += 1;
+                        }
+                    }
+                    SsoConfigStep::SessionName => {
+                        // Allow alphanumeric, dash, and underscore
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            self.sso_session_name_input.insert(self.sso_input_cursor, c);
+                            self.sso_input_cursor += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn save_profile_credentials(
         &mut self,
         account: &AccountRole,
@@ -576,9 +757,11 @@ impl App {
     async fn login(&mut self) -> Result<()> {
         // Check if SSO config is available
         if !sso_config::has_sso_config(None, None) {
-            self.state = AppState::Error(
-                "SSO not configured. Please configure [sso-session] in:\n\n  ~/.aws/config\n\nOr set environment variables:\n  AWS_SSO_START_URL\n  AWS_SSO_REGION".to_string()
-            );
+            // Show SSO configuration input screen
+            self.state = AppState::SsoConfigInput {
+                step: SsoConfigStep::StartUrl,
+            };
+            self.status_message = Some("Please configure AWS SSO to get started".to_string());
             return Ok(());
         }
 
@@ -936,6 +1119,7 @@ impl App {
             AppState::Loading => self.draw_loading_screen(f),
             AppState::Error(msg) => self.draw_error_screen(f, msg.clone()),
             AppState::ProfileInput => self.draw_profile_input_screen(f),
+            AppState::SsoConfigInput { step } => self.draw_sso_config_input_screen(f, step.clone()),
         }
     }
 
@@ -1272,5 +1456,90 @@ impl App {
         )
         .style(Style::default().fg(Color::Gray));
         f.render_widget(instructions, chunks[4]);
+    }
+
+    fn draw_sso_config_input_screen(&self, f: &mut Frame, step: SsoConfigStep) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // Title
+                Constraint::Length(10), // Instructions
+                Constraint::Length(3),  // Input
+                Constraint::Min(0),     // Spacer
+                Constraint::Length(2),  // Help
+            ])
+            .split(f.area());
+
+        // Title
+        let title = Paragraph::new("AWS SSO Configuration")
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(title, chunks[0]);
+
+        // Instructions based on current step
+        let (step_title, instructions, example) = match step {
+            SsoConfigStep::StartUrl => (
+                "Step 1 of 3: SSO Start URL",
+                "Enter your AWS SSO start URL (IAM Identity Center portal URL)",
+                "Example: https://my-org.awsapps.com/start",
+            ),
+            SsoConfigStep::Region => (
+                "Step 2 of 3: SSO Region",
+                "Enter the AWS Region where SSO is configured",
+                "Example: us-east-1",
+            ),
+            SsoConfigStep::SessionName => (
+                "Step 3 of 3: Session Name",
+                "Enter a name for this SSO session (optional)",
+                "Default: default-sso",
+            ),
+        };
+
+        let info_text = vec![
+            Line::from(Span::styled(
+                step_title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(instructions),
+            Line::from(""),
+            Line::from(Span::styled(example, Style::default().fg(Color::Gray))),
+            Line::from(""),
+            Line::from("The configuration will be saved to ~/.aws/config"),
+            Line::from("as a [sso-session] section."),
+        ];
+
+        let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));
+        f.render_widget(info, chunks[1]);
+
+        // Input field with cursor
+        let (current_input, field_label) = match step {
+            SsoConfigStep::StartUrl => (&self.sso_start_url_input, "SSO Start URL"),
+            SsoConfigStep::Region => (&self.sso_region_input, "SSO Region"),
+            SsoConfigStep::SessionName => (&self.sso_session_name_input, "Session Name"),
+        };
+
+        let input_with_cursor = if current_input.is_empty() {
+            "█".to_string()
+        } else {
+            let (before, after) = current_input.split_at(self.sso_input_cursor);
+            format!("{}█{}", before, after)
+        };
+
+        let input = Paragraph::new(input_with_cursor.as_str())
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL).title(field_label));
+        f.render_widget(input, chunks[2]);
+
+        // Help
+        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
+            .style(Style::default().fg(Color::Gray));
+        f.render_widget(help, chunks[4]);
     }
 }
