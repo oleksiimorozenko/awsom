@@ -123,6 +123,97 @@ pub fn read_sso_session() -> Result<Option<SsoSession>> {
     Ok(None)
 }
 
+/// Read all SSO sessions from ~/.aws/config
+/// Returns a vector of all sso-sessions found
+pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
+    let config_path = config_file_path()?;
+
+    if !config_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
+
+    let mut sessions = Vec::new();
+    let mut in_sso_session = false;
+    let mut session_name: Option<String> = None;
+    let mut session_data: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            // Save previous sso-session if complete
+            if in_sso_session {
+                if let Some(name) = session_name.take() {
+                    if let (Some(start_url), Some(region)) = (
+                        session_data.get("sso_start_url"),
+                        session_data.get("sso_region"),
+                    ) {
+                        let scopes = session_data
+                            .get("sso_registration_scopes")
+                            .cloned()
+                            .unwrap_or_else(|| "sso:account:access".to_string());
+
+                        sessions.push(SsoSession {
+                            session_name: name,
+                            sso_start_url: start_url.clone(),
+                            sso_region: region.clone(),
+                            sso_registration_scopes: scopes,
+                        });
+                    }
+                }
+                session_data.clear();
+            }
+
+            // Check if this is a new sso-session header
+            if trimmed.starts_with("[sso-session ") {
+                in_sso_session = true;
+                let name_part = &trimmed[13..trimmed.len() - 1]; // Extract name between "[sso-session " and "]"
+                session_name = Some(name_part.trim().to_string());
+            } else {
+                in_sso_session = false;
+                session_name = None;
+            }
+            continue;
+        }
+
+        if in_sso_session && trimmed.contains('=') {
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let key = parts[0].trim().to_string();
+                let value = parts[1].trim().to_string();
+                session_data.insert(key, value);
+            }
+        }
+    }
+
+    // Handle last session if file ends without a new section
+    if in_sso_session {
+        if let Some(name) = session_name {
+            if let (Some(start_url), Some(region)) = (
+                session_data.get("sso_start_url"),
+                session_data.get("sso_region"),
+            ) {
+                let scopes = session_data
+                    .get("sso_registration_scopes")
+                    .cloned()
+                    .unwrap_or_else(|| "sso:account:access".to_string());
+
+                sessions.push(SsoSession {
+                    session_name: name,
+                    sso_start_url: start_url.clone(),
+                    sso_region: region.clone(),
+                    sso_registration_scopes: scopes,
+                });
+            }
+        }
+    }
+
+    Ok(sessions)
+}
+
 /// Default profile configuration
 #[derive(Debug, Clone)]
 pub struct DefaultConfig {

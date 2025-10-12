@@ -29,22 +29,47 @@ struct AccountRoleWithStatus {
     is_default: bool,
 }
 
+/// SSO Session with its status
+#[derive(Debug, Clone)]
+struct SsoSessionInfo {
+    session_name: String,
+    start_url: String,
+    region: String,
+    is_active: bool,
+    token_expiration: Option<chrono::DateTime<chrono::Utc>>,
+    instance: SsoInstance,
+    token: Option<SsoToken>,
+}
+
+/// Active pane in two-pane layout
+#[derive(Debug, Clone, PartialEq)]
+enum ActivePane {
+    Sessions,
+    Accounts,
+}
+
 pub struct App {
     /// Whether the app should quit
     should_quit: bool,
     /// Current screen/state
     state: AppState,
-    /// List of accounts and roles with their active status
+    /// Active pane (Sessions or Accounts)
+    active_pane: ActivePane,
+    /// List of SSO sessions with their status
+    sso_sessions: Vec<SsoSessionInfo>,
+    /// SSO sessions list selection state
+    sessions_list_state: ListState,
+    /// List of accounts and roles with their active status (filtered by selected session)
     accounts: Vec<AccountRoleWithStatus>,
-    /// List selection state
-    list_state: ListState,
+    /// Accounts list selection state
+    accounts_list_state: ListState,
     /// Authentication manager
     auth_manager: AuthManager,
     /// Credential manager
     credential_manager: CredentialManager,
-    /// Current SSO instance
+    /// Current SSO instance (from selected session)
     sso_instance: Option<SsoInstance>,
-    /// Current SSO token (if logged in)
+    /// Current SSO token (from selected session)
     sso_token: Option<SsoToken>,
     /// Status message to display
     status_message: Option<String>,
@@ -126,8 +151,11 @@ impl App {
         Ok(Self {
             should_quit: false,
             state: AppState::Main,
+            active_pane: ActivePane::Sessions,
+            sso_sessions: Vec::new(),
+            sessions_list_state: ListState::default(),
             accounts: Vec::new(),
-            list_state: ListState::default(),
+            accounts_list_state: ListState::default(),
             auth_manager,
             credential_manager,
             sso_instance: None,
@@ -154,6 +182,24 @@ impl App {
         })
     }
 
+    /// Get the currently selected SSO session
+    fn get_selected_session(&self) -> Option<&SsoSessionInfo> {
+        self.sessions_list_state
+            .selected()
+            .and_then(|idx| self.sso_sessions.get(idx))
+    }
+
+    /// Get the currently selected SSO session's token
+    fn get_current_token(&self) -> Option<&SsoToken> {
+        self.get_selected_session()
+            .and_then(|session| session.token.as_ref())
+    }
+
+    /// Get the currently selected SSO session's instance
+    fn get_current_instance(&self) -> Option<&SsoInstance> {
+        self.get_selected_session().map(|session| &session.instance)
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         // Setup terminal
         enable_raw_mode().map_err(SsoError::Io)?;
@@ -162,8 +208,13 @@ impl App {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(SsoError::Io)?;
 
-        // Try to load existing SSO token
-        self.load_sso_session().await;
+        // Load all SSO sessions
+        self.load_all_sso_sessions().await;
+
+        // Load accounts for selected session if active
+        if self.sso_token.is_some() {
+            let _ = self.load_accounts().await;
+        }
 
         // Main event loop
         let result = self.run_event_loop(&mut terminal).await;
@@ -288,6 +339,20 @@ impl App {
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.state = AppState::Help;
             }
+            KeyCode::Tab => {
+                // Switch between Sessions and Accounts panes
+                self.active_pane = match self.active_pane {
+                    ActivePane::Sessions => ActivePane::Accounts,
+                    ActivePane::Accounts => ActivePane::Sessions,
+                };
+                self.status_message = Some(format!(
+                    "Switched to {} pane",
+                    match self.active_pane {
+                        ActivePane::Sessions => "Sessions",
+                        ActivePane::Accounts => "Accounts",
+                    }
+                ));
+            }
             KeyCode::Char('l') => {
                 // Toggle login/logout
                 if self.sso_token.is_some() {
@@ -306,15 +371,25 @@ impl App {
                     self.status_message = Some("Not logged in. Press 'l' to login.".to_string());
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.next_item();
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.previous_item();
-            }
+            KeyCode::Down | KeyCode::Char('j') => match self.active_pane {
+                ActivePane::Sessions => self.next_session(),
+                ActivePane::Accounts => self.next_item(),
+            },
+            KeyCode::Up | KeyCode::Char('k') => match self.active_pane {
+                ActivePane::Sessions => self.previous_session(),
+                ActivePane::Accounts => self.previous_item(),
+            },
             KeyCode::Enter => {
-                // Start or stop role session based on current state
-                self.toggle_role_session().await?;
+                match self.active_pane {
+                    ActivePane::Sessions => {
+                        // Start or stop SSO session
+                        self.toggle_sso_session().await?;
+                    }
+                    ActivePane::Accounts => {
+                        // Start or stop role session
+                        self.toggle_role_session().await?;
+                    }
+                }
             }
             KeyCode::Char('p') => {
                 // Edit profile name
@@ -337,7 +412,7 @@ impl App {
         if self.accounts.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
+        let i = match self.accounts_list_state.selected() {
             Some(i) => {
                 if i >= self.accounts.len() - 1 {
                     0
@@ -347,14 +422,14 @@ impl App {
             }
             None => 0,
         };
-        self.list_state.select(Some(i));
+        self.accounts_list_state.select(Some(i));
     }
 
     fn previous_item(&mut self) {
         if self.accounts.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
+        let i = match self.accounts_list_state.selected() {
             Some(i) => {
                 if i == 0 {
                     self.accounts.len() - 1
@@ -364,12 +439,170 @@ impl App {
             }
             None => 0,
         };
-        self.list_state.select(Some(i));
+        self.accounts_list_state.select(Some(i));
+    }
+
+    fn next_session(&mut self) {
+        if self.sso_sessions.is_empty() {
+            return;
+        }
+        let i = match self.sessions_list_state.selected() {
+            Some(i) => {
+                if i >= self.sso_sessions.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.sessions_list_state.select(Some(i));
+        // Update current session
+        self.update_current_session_from_selection();
+    }
+
+    fn previous_session(&mut self) {
+        if self.sso_sessions.is_empty() {
+            return;
+        }
+        let i = match self.sessions_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.sso_sessions.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.sessions_list_state.select(Some(i));
+        // Update current session
+        self.update_current_session_from_selection();
+    }
+
+    /// Update current sso_instance and sso_token based on selected session
+    fn update_current_session_from_selection(&mut self) {
+        let selected_idx = self.sessions_list_state.selected();
+        if let Some(idx) = selected_idx {
+            if let Some(session) = self.sso_sessions.get(idx) {
+                self.sso_instance = Some(session.instance.clone());
+                self.sso_token = session.token.clone();
+                return;
+            }
+        }
+        self.sso_instance = None;
+        self.sso_token = None;
+    }
+
+    /// Toggle SSO session: if active, logout; if inactive, login
+    async fn toggle_sso_session(&mut self) -> Result<()> {
+        if let Some(index) = self.sessions_list_state.selected() {
+            if let Some(session) = self.sso_sessions.get(index).cloned() {
+                if session.is_active {
+                    // Session is active, logout
+                    self.logout_session(index).await?;
+                } else {
+                    // Session is inactive, login
+                    self.login_session(index).await?;
+                }
+            }
+        } else {
+            self.status_message = Some("No session selected".to_string());
+        }
+        Ok(())
+    }
+
+    /// Login to a specific SSO session by index
+    async fn login_session(&mut self, index: usize) -> Result<()> {
+        if let Some(session) = self.sso_sessions.get(index).cloned() {
+            self.status_message = Some(format!("Logging in to {}...", session.session_name));
+            self.state = AppState::Loading;
+
+            let instance = session.instance.clone();
+            let instance_clone = instance.clone();
+
+            // Perform login with callback
+            match self
+                .auth_manager
+                .login_with_callback(&instance, false, |auth_info| {
+                    self.device_auth_info = Some(auth_info.clone());
+
+                    // Open browser
+                    let url_to_open = auth_info
+                        .verification_uri_complete
+                        .as_ref()
+                        .unwrap_or(&auth_info.verification_uri);
+
+                    if let Err(e) = webbrowser::open(url_to_open) {
+                        tracing::warn!("Could not open browser automatically: {}", e);
+                    }
+
+                    Ok(())
+                })
+                .await
+            {
+                Ok(token) => {
+                    self.device_auth_info = None;
+
+                    // Update session in list
+                    if let Some(session_mut) = self.sso_sessions.get_mut(index) {
+                        session_mut.is_active = true;
+                        session_mut.token = Some(token.clone());
+                        session_mut.token_expiration = Some(token.expires_at);
+                    }
+
+                    // Update current session
+                    self.sso_instance = Some(instance_clone);
+                    self.sso_token = Some(token);
+                    self.state = AppState::Main;
+                    self.status_message = Some(format!("✓ Logged in to {}", session.session_name));
+
+                    // Load accounts for this session
+                    self.load_accounts().await?;
+                }
+                Err(e) => {
+                    self.device_auth_info = None;
+                    self.state = AppState::Main;
+                    self.status_message = Some(format!("Login failed: {}", e));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Logout from a specific SSO session by index
+    async fn logout_session(&mut self, index: usize) -> Result<()> {
+        if let Some(session) = self.sso_sessions.get_mut(index) {
+            self.status_message = Some(format!("Logging out from {}...", session.session_name));
+
+            // Remove cached token
+            if let Err(e) = self.auth_manager.remove_token(&session.instance) {
+                tracing::warn!("Failed to remove cached token: {}", e);
+            }
+
+            // Update session status
+            session.is_active = false;
+            session.token = None;
+            session.token_expiration = None;
+
+            // If this was the current session, clear it
+            if let Some(ref current_instance) = self.sso_instance {
+                if current_instance.start_url == session.start_url {
+                    self.sso_instance = None;
+                    self.sso_token = None;
+                    self.accounts.clear();
+                    self.accounts_list_state.select(None);
+                }
+            }
+
+            self.status_message = Some(format!("✓ Logged out from {}", session.session_name));
+        }
+        Ok(())
     }
 
     /// Toggle role session: if active, delete it; if inactive, create it
     async fn toggle_role_session(&mut self) -> Result<()> {
-        if let Some(index) = self.list_state.selected() {
+        if let Some(index) = self.accounts_list_state.selected() {
             if let Some(account_with_status) = self.accounts.get(index).cloned() {
                 let account = account_with_status.account_role;
 
@@ -458,7 +691,7 @@ impl App {
 
     /// Set the selected role's profile as the default profile
     async fn set_as_default(&mut self) -> Result<()> {
-        if let Some(index) = self.list_state.selected() {
+        if let Some(index) = self.accounts_list_state.selected() {
             if let Some(account_with_status) = self.accounts.get(index).cloned() {
                 let account = account_with_status.account_role;
 
@@ -513,7 +746,7 @@ impl App {
 
     /// Open profile name editor for selected role
     async fn edit_profile_name(&mut self) -> Result<()> {
-        if let Some(index) = self.list_state.selected() {
+        if let Some(index) = self.accounts_list_state.selected() {
             if let Some(account_with_status) = self.accounts.get(index).cloned() {
                 let account = account_with_status.account_role;
 
@@ -1255,10 +1488,67 @@ impl App {
         self.sso_token = None;
         self.sso_instance = None;
         self.accounts.clear();
-        self.list_state.select(None);
+        self.accounts_list_state.select(None);
         self.status_message = Some("Logged out successfully. Press 'l' to login.".to_string());
 
         Ok(())
+    }
+
+    /// Load all SSO sessions from ~/.aws/config and check their token status
+    async fn load_all_sso_sessions(&mut self) {
+        match crate::aws_config::read_all_sso_sessions() {
+            Ok(sessions) => {
+                let mut sso_session_infos = Vec::new();
+
+                for session in sessions {
+                    let instance = SsoInstance {
+                        start_url: session.sso_start_url.clone(),
+                        region: session.sso_region.clone(),
+                    };
+
+                    // Try to load cached token for this session
+                    let (is_active, token, token_expiration) =
+                        match self.auth_manager.get_cached_token(&instance) {
+                            Ok(Some(token)) if !token.is_expired() => {
+                                let expiration = token.expires_at;
+                                (true, Some(token), Some(expiration))
+                            }
+                            _ => (false, None, None),
+                        };
+
+                    sso_session_infos.push(SsoSessionInfo {
+                        session_name: session.session_name,
+                        start_url: session.sso_start_url,
+                        region: session.sso_region,
+                        is_active,
+                        token_expiration,
+                        instance,
+                        token,
+                    });
+                }
+
+                self.sso_sessions = sso_session_infos;
+
+                // Select first session if available
+                if !self.sso_sessions.is_empty() && self.sessions_list_state.selected().is_none() {
+                    self.sessions_list_state.select(Some(0));
+                    // Set current session to first one if it's active
+                    if let Some(first_session) = self.sso_sessions.first() {
+                        if first_session.is_active {
+                            self.sso_instance = Some(first_session.instance.clone());
+                            self.sso_token = first_session.token.clone();
+                        }
+                    }
+                }
+
+                self.status_message =
+                    Some(format!("Loaded {} SSO session(s)", self.sso_sessions.len()));
+            }
+            Err(e) => {
+                tracing::warn!("Error loading SSO sessions: {}", e);
+                self.status_message = Some(format!("Error loading sessions: {}", e));
+            }
+        }
     }
 
     async fn load_sso_session(&mut self) {
@@ -1420,8 +1710,8 @@ impl App {
                     ));
 
                     // Select first item if none selected
-                    if self.list_state.selected().is_none() && !self.accounts.is_empty() {
-                        self.list_state.select(Some(0));
+                    if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
+                        self.accounts_list_state.select(Some(0));
                     }
                 }
                 Err(e) => {
@@ -1467,7 +1757,7 @@ impl App {
 
     /// Open AWS Console in browser for selected role
     async fn open_console(&mut self) -> Result<()> {
-        if let Some(index) = self.list_state.selected() {
+        if let Some(index) = self.accounts_list_state.selected() {
             if let Some(account_with_status) = self.accounts.get(index).cloned() {
                 let account = account_with_status.account_role;
 
@@ -1560,7 +1850,7 @@ impl App {
         f.render_widget(header, chunks[0]);
 
         // Account/Role table
-        let selected_index = self.list_state.selected().unwrap_or(0);
+        let selected_index = self.accounts_list_state.selected().unwrap_or(0);
 
         let rows: Vec<Row> = self
             .accounts
