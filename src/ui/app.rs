@@ -304,11 +304,11 @@ impl App {
                             "Stopping session for profile '{}'...",
                             existing_profile
                         ));
-                        if let Err(e) = crate::aws_config::delete_profile(&existing_profile) {
+                        if let Err(e) = crate::aws_config::invalidate_profile(&existing_profile) {
                             self.status_message = Some(format!("Error stopping session: {}", e));
                         } else {
                             self.status_message = Some(format!(
-                                "✓ Stopped session for profile '{}'",
+                                "✓ Stopped session for profile '{}' (profile preserved)",
                                 existing_profile
                             ));
                             // Reload accounts to update indicators
@@ -1142,7 +1142,7 @@ impl App {
             Line::from("  r           - Refresh account/role list"),
             Line::from("  ↑, k        - Move selection up"),
             Line::from("  ↓, j        - Move selection down"),
-            Line::from("  Enter       - Start/stop session for selected role"),
+            Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
             Line::from("  p           - Edit profile name for selected role"),
             Line::from("  d           - Set selected role's profile as default"),
             Line::from("  c           - Open AWS Console in browser for selected role"),

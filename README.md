@@ -158,7 +158,7 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 - `r` - Refresh account/role list
 - `↑`/`k` - Move selection up
 - `↓`/`j` - Move selection down
-- `Enter` - Start/stop session for selected role (gets credentials or deletes profile)
+- `Enter` - Start/stop session for selected role (activates or invalidates credentials)
 - `p` - Edit profile name for selected role
 - `d` - Set selected role's profile as default
 - `c` - Open AWS Console in browser for selected role

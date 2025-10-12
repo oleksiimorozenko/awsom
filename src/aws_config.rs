@@ -6,6 +6,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// SSO Session configuration
+#[derive(Debug, Clone)]
+pub struct SsoSession {
+    pub session_name: String,
+    pub sso_start_url: String,
+    pub sso_region: String,
+    pub sso_registration_scopes: String,
+}
+
 /// Get the AWS credentials file path
 pub fn credentials_file_path() -> Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
@@ -26,6 +35,130 @@ pub fn config_file_path() -> Result<PathBuf> {
             "Could not determine home directory".to_string(),
         ))
     }
+}
+
+/// Read SSO session from ~/.aws/config
+/// Returns the first sso-session found, or None if no session exists
+pub fn read_sso_session() -> Result<Option<SsoSession>> {
+    let config_path = config_file_path()?;
+
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
+
+    let mut in_sso_session = false;
+    let mut session_name: Option<String> = None;
+    let mut session_data: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            // Check if previous section was an sso-session
+            if in_sso_session {
+                // Found a complete sso-session, return it
+                if let Some(name) = session_name.take() {
+                    if let (Some(start_url), Some(region)) = (
+                        session_data.get("sso_start_url"),
+                        session_data.get("sso_region"),
+                    ) {
+                        let scopes = session_data
+                            .get("sso_registration_scopes")
+                            .cloned()
+                            .unwrap_or_else(|| "sso:account:access".to_string());
+
+                        return Ok(Some(SsoSession {
+                            session_name: name,
+                            sso_start_url: start_url.clone(),
+                            sso_region: region.clone(),
+                            sso_registration_scopes: scopes,
+                        }));
+                    }
+                }
+            }
+
+            // Parse new section header
+            let section = &trimmed[1..trimmed.len() - 1];
+            if let Some(name) = section.strip_prefix("sso-session ") {
+                in_sso_session = true;
+                session_name = Some(name.to_string());
+                session_data.clear();
+            } else {
+                in_sso_session = false;
+            }
+        } else if in_sso_session && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            if let Some(eq_pos) = trimmed.find('=') {
+                let key = trimmed[..eq_pos].trim().to_string();
+                let value = trimmed[eq_pos + 1..].trim().to_string();
+                session_data.insert(key, value);
+            }
+        }
+    }
+
+    // Check last section
+    if in_sso_session {
+        if let Some(name) = session_name {
+            if let (Some(start_url), Some(region)) = (
+                session_data.get("sso_start_url"),
+                session_data.get("sso_region"),
+            ) {
+                let scopes = session_data
+                    .get("sso_registration_scopes")
+                    .cloned()
+                    .unwrap_or_else(|| "sso:account:access".to_string());
+
+                return Ok(Some(SsoSession {
+                    session_name: name,
+                    sso_start_url: start_url.clone(),
+                    sso_region: region.clone(),
+                    sso_registration_scopes: scopes,
+                }));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Write SSO session to ~/.aws/config
+pub fn write_sso_session(session: &SsoSession) -> Result<()> {
+    let config_path = config_file_path()?;
+    let aws_dir = config_path
+        .parent()
+        .ok_or_else(|| SsoError::ConfigError("Invalid config path".to_string()))?;
+
+    // Create ~/.aws directory if it doesn't exist
+    if !aws_dir.exists() {
+        fs::create_dir_all(aws_dir).map_err(|e| {
+            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
+        })?;
+    }
+
+    let existing_config = if config_path.exists() {
+        fs::read_to_string(&config_path)
+            .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?
+    } else {
+        String::new()
+    };
+
+    let section_name = format!("sso-session {}", session.session_name);
+    let new_config = update_ini_section(
+        &existing_config,
+        &section_name,
+        &[
+            ("sso_start_url", &session.sso_start_url),
+            ("sso_region", &session.sso_region),
+            ("sso_registration_scopes", &session.sso_registration_scopes),
+        ],
+    );
+
+    fs::write(&config_path, new_config)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+
+    Ok(())
 }
 
 /// Write credentials to ~/.aws/credentials and config
@@ -68,13 +201,17 @@ pub fn write_credentials_with_metadata(
 
     // Build metadata comments if account_role is provided
     let metadata = if let Some(role) = account_role {
-        let mut comments = vec![
+        vec![
             format!("# Account: {}", role.account_id),
             format!("# Role: {}", role.role_name),
-        ];
-        // Add expiration timestamp as ISO 8601
-        comments.push(format!("# Expiration: {}", creds.expiration.to_rfc3339()));
-        Some(comments)
+            format!("# Valid: {}", creds.expiration.to_rfc3339()),
+        ]
+    } else {
+        vec![]
+    };
+
+    let metadata = if !metadata.is_empty() {
+        Some(metadata)
     } else {
         None
     };
@@ -110,13 +247,36 @@ pub fn write_credentials_with_metadata(
         format!("profile {}", profile_name)
     };
 
-    // Build config entries (region + optional output)
-    let mut config_entries = vec![("region", region)];
+    // Build config entries with owned strings for SSO data
+    let mut config_entries_owned: Vec<(String, String)> = vec![];
+    let mut config_entries: Vec<(&str, &str)> = vec![("region", region)];
+
     if let Some(output) = output_format {
         config_entries.push(("output", output));
     }
 
-    let new_config = update_ini_section(&existing_config, &profile_section, &config_entries);
+    // Add SSO session information if account_role is provided
+    if let Some(role) = account_role {
+        // Try to get the SSO session from config
+        if let Ok(Some(session)) = read_sso_session() {
+            config_entries_owned.push(("sso_session".to_string(), session.session_name));
+            config_entries_owned.push(("sso_account_id".to_string(), role.account_id.clone()));
+            config_entries_owned.push(("sso_role_name".to_string(), role.role_name.clone()));
+        }
+    }
+
+    // Combine both vectors
+    let config_entries_refs: Vec<(&str, &str)> = config_entries
+        .iter()
+        .map(|(k, v)| (*k, *v))
+        .chain(
+            config_entries_owned
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+        .collect();
+
+    let new_config = update_ini_section(&existing_config, &profile_section, &config_entries_refs);
 
     fs::write(&config_path, new_config)
         .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
@@ -452,7 +612,47 @@ fn rename_ini_section(content: &str, old_name: &str, new_name: &str) -> String {
     cleanup_empty_lines(&result)
 }
 
+/// Invalidate a profile's credentials without deleting the profile structure
+/// This preserves profile names and allows reactivation without losing configuration
+pub fn invalidate_profile(profile_name: &str) -> Result<()> {
+    let creds_path = credentials_file_path()?;
+
+    if !creds_path.exists() {
+        return Ok(()); // Nothing to invalidate
+    }
+
+    let content = fs::read_to_string(&creds_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read credentials file: {}", e)))?;
+
+    // Replace credentials with dummy values and mark as invalid
+    let dummy_key = "INVALID_KEY";
+    let dummy_secret = "INVALID_SECRET";
+    let dummy_token = "INVALID_TOKEN";
+
+    let metadata = Some(vec![
+        format!("# Valid: false"),
+        format!("# Invalidated: {}", Utc::now().to_rfc3339()),
+    ]);
+
+    let new_content = update_ini_section_with_comments(
+        &content,
+        profile_name,
+        &[
+            ("aws_access_key_id", dummy_key),
+            ("aws_secret_access_key", dummy_secret),
+            ("aws_session_token", dummy_token),
+        ],
+        metadata.as_deref(),
+    );
+
+    fs::write(&creds_path, new_content)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+
+    Ok(())
+}
+
 /// Delete a profile from AWS credentials and config files
+/// NOTE: Consider using invalidate_profile() instead to preserve profile names
 pub fn delete_profile(profile_name: &str) -> Result<()> {
     // Delete from credentials file
     let creds_path = credentials_file_path()?;
@@ -608,8 +808,19 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
                 account_id = Some(rest.trim().to_string());
             } else if let Some(rest) = trimmed.strip_prefix("# Role:") {
                 role_name = Some(rest.trim().to_string());
+            } else if let Some(rest) = trimmed.strip_prefix("# Valid:") {
+                let value = rest.trim();
+                if value == "false" {
+                    // Profile is invalidated, no expiration
+                    expiration = None;
+                } else {
+                    // Parse ISO 8601 timestamp (expiration date)
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+                        expiration = Some(dt.with_timezone(&Utc));
+                    }
+                }
             } else if let Some(rest) = trimmed.strip_prefix("# Expiration:") {
-                // Parse ISO 8601 timestamp
+                // Backward compatibility: parse old format
                 if let Ok(dt) = DateTime::parse_from_rfc3339(rest.trim()) {
                     expiration = Some(dt.with_timezone(&Utc));
                 }
