@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "awsom")]
-#[command(about = "A TUI for managing AWS SSO sessions", long_about = None)]
+#[command(about = "AWS Organization Manager - TUI for managing AWS SSO sessions", long_about = None)]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]

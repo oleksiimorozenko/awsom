@@ -1,4 +1,4 @@
-// AWS SSO TUI - Terminal User Interface for AWS SSO Session Management
+// awsom - AWS Organization Manager
 
 mod auth;
 mod aws_config;

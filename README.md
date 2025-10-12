@@ -172,10 +172,10 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 - **Console Access**: One-key access to AWS Console with federated sign-in
 
 **Setup:**
-1. Create a config file: `awsom config init`
-2. Edit `~/.config/awsom/config.toml` with your SSO details
-3. Launch TUI: `awsom`
-4. Press `l` to login, or the TUI will auto-load cached sessions
+1. Launch TUI: `awsom`
+2. Press `l` to login
+3. Follow the interactive prompts to configure your SSO (if not already configured)
+4. Authenticate in your browser and start managing your AWS sessions!
 
 ## CLI Commands
 
@@ -331,77 +331,49 @@ awsom completions <SHELL>
 Generate shell completion scripts for bash, zsh, fish, powershell, or elvish.
 See [Shell Completion](#shell-completion) section for installation instructions.
 
-### `config` - Manage configuration
-
-```bash
-# Create a sample config file
-awsom config init
-
-# Show config file path and status
-awsom config path
-```
-
 ## Configuration
 
-### Config File
+awsom uses `~/.aws/config` as the single source of truth for SSO configuration, following AWS CLI v2 conventions. No separate configuration file is needed!
 
-awsom uses a TOML configuration file with automatic location detection:
+### Interactive Configuration
 
-**Location Priority (Unix/macOS):**
-1. `$XDG_CONFIG_HOME/awsom/config.toml` (if `XDG_CONFIG_HOME` is set)
-2. `~/.config/awsom/config.toml` (if `~/.config` directory exists)
-3. `~/.awsom/config.toml` (fallback, doesn't create `~/.config` for you)
+When you first run awsom and press 'l' to login, if no SSO configuration exists, you'll be guided through an interactive 3-step wizard that will:
 
-**Windows:**
-- `%APPDATA%\awsom\config.toml`
+1. Ask for your **SSO Start URL** (e.g., `https://your-org.awsapps.com/start`)
+2. Ask for your **SSO Region** (e.g., `us-east-1`)
+3. Ask for an optional **Session Name** (default: `default-sso`)
 
-#### Creating a Config File
+The configuration will be automatically saved to `~/.aws/config` as a `[sso-session]` section.
 
-```bash
-# Create a sample config file with all options
-awsom config init
+### Manual Configuration
 
-# Show the config file path and status
-awsom config path
+You can also manually edit `~/.aws/config` to add or update SSO sessions:
+
+```ini
+[sso-session my-sso]
+sso_start_url = https://your-org.awsapps.com/start
+sso_region = us-east-1
+sso_registration_scopes = sso:account:access
 ```
 
-#### Config File Format
+Or use the AWS CLI to configure SSO:
 
-```toml
-[sso]
-# Your AWS SSO start URL (required)
-start_url = "https://your-org.awsapps.com/start"
-
-# AWS region for SSO (required)
-region = "us-east-1"
-
-[profile_defaults]
-# Default region for AWS profiles (optional)
-# If not specified, uses the SSO region
-region = "us-east-1"
-
-# Default output format for AWS profiles (optional)
-# Options: json, text, table, yaml
-output = "json"
-
-[ui]
-# Refresh interval for TUI in minutes (default: 1)
-refresh_interval = 1
+```bash
+aws configure sso-session
 ```
 
 ### Environment Variables
 
-Environment variables take precedence over config file values:
+You can override SSO configuration with environment variables:
 
-- `AWS_SSO_START_URL`: SSO start URL (overrides config file)
-- `AWS_SSO_REGION`: SSO region (overrides config file)
-- `XDG_CONFIG_HOME`: Force config directory to `$XDG_CONFIG_HOME/awsom`
+- `AWS_SSO_START_URL`: SSO start URL
+- `AWS_SSO_REGION`: SSO region
 
 ### Configuration Priority
 
 Settings are loaded in this order (later sources override earlier ones):
 
-1. Config file (see location priority above)
+1. `~/.aws/config` `[sso-session]` sections
 2. Environment variables (`AWS_SSO_START_URL`, `AWS_SSO_REGION`)
 3. CLI flags (`--start-url`, `--region`)
 

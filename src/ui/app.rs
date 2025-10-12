@@ -1135,7 +1135,7 @@ impl App {
             .split(f.area());
 
         // Header
-        let header = Paragraph::new("AWS SSO TUI")
+        let header = Paragraph::new("awsom - AWS Organization Manager")
             .style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -1290,7 +1290,7 @@ impl App {
     fn draw_help_screen(&self, f: &mut Frame) {
         let help_text = vec![
             Line::from(Span::styled(
-                "AWS SSO TUI - Help",
+                "awsom - Help",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
