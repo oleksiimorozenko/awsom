@@ -65,6 +65,8 @@ pub struct App {
     sso_region_input: String,
     sso_session_name_input: String,
     sso_input_cursor: usize,
+    /// Last automatic refresh time
+    last_auto_refresh: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +117,7 @@ impl App {
             sso_region_input: String::new(),
             sso_session_name_input: "default-sso".to_string(),
             sso_input_cursor: 0,
+            last_auto_refresh: None,
         })
     }
 
@@ -144,8 +147,34 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
+        // Refresh interval: 1 minute
+        const AUTO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
         loop {
             terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
+
+            // Check if we need to auto-refresh (every 1 minute)
+            let now = std::time::Instant::now();
+            let should_auto_refresh = match self.last_auto_refresh {
+                Some(last_refresh) => now.duration_since(last_refresh) >= AUTO_REFRESH_INTERVAL,
+                None => {
+                    // First time - set the timer but don't refresh yet
+                    self.last_auto_refresh = Some(now);
+                    false
+                }
+            };
+
+            if should_auto_refresh
+                && self.state == AppState::Main
+                && self.sso_token.is_some()
+                && !self.accounts.is_empty()
+            {
+                tracing::debug!("Auto-refreshing account list (1 minute interval)");
+                self.last_auto_refresh = Some(now);
+                if let Err(e) = self.load_accounts().await {
+                    tracing::warn!("Auto-refresh failed: {}", e);
+                }
+            }
 
             if event::poll(std::time::Duration::from_millis(250)).map_err(SsoError::Io)? {
                 if let Event::Key(key) = event::read().map_err(SsoError::Io)? {
@@ -232,6 +261,8 @@ impl App {
                 // Refresh account list
                 if self.sso_token.is_some() {
                     self.load_accounts().await?;
+                    // Reset auto-refresh timer after manual refresh
+                    self.last_auto_refresh = Some(std::time::Instant::now());
                 } else {
                     self.status_message = Some("Not logged in. Press 'l' to login.".to_string());
                 }
