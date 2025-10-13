@@ -2119,10 +2119,17 @@ impl App {
         self.draw_sessions_pane(f, chunks[2]);
 
         // Help bar (2 lines for better readability)
+        // Make Enter key description context-aware
+        let enter_action = match self.active_pane {
+            ActivePane::Sessions => "Enter:login/logout session",
+            ActivePane::Accounts => "Enter:activate/deactivate credentials",
+        };
+
         let help_lines = vec![
-            Line::from(vec![Span::raw(
-                "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | Enter:toggle",
-            )]),
+            Line::from(vec![Span::raw(format!(
+                "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | {}",
+                enter_action
+            ))]),
             Line::from(vec![
                 Span::raw("Sessions: "),
                 Span::styled("a", Style::default().add_modifier(Modifier::BOLD)),
