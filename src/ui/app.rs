@@ -1975,8 +1975,7 @@ impl App {
                 Constraint::Length(3),                      // Header
                 Constraint::Min(10),                        // Accounts pane (flexible)
                 Constraint::Length(sessions_height as u16), // Sessions pane (dynamic)
-                Constraint::Length(3),                      // Status
-                Constraint::Length(1),                      // Help bar
+                Constraint::Length(2),                      // Help bar (2 lines)
             ])
             .split(f.area());
 
@@ -2119,49 +2118,32 @@ impl App {
         // Sessions pane
         self.draw_sessions_pane(f, chunks[2]);
 
-        // Status bar
-        let selected_session_name = self
-            .sessions_list_state
-            .selected()
-            .and_then(|idx| self.sso_sessions.get(idx))
-            .map(|s| s.session_name.as_str())
-            .unwrap_or("None");
-
-        let status_text = if let Some(ref token) = self.sso_token {
-            if token.is_expired() {
-                format!(
-                    "Session: {} | SSO Token: EXPIRED (Tab to Sessions pane, Enter to re-login)",
-                    selected_session_name
-                )
-            } else {
-                format!(
-                    "Session: {} | SSO Token: Valid (expires in {})",
-                    selected_session_name,
-                    token.expiration_display()
-                )
-            }
-        } else {
-            format!(
-                "Session: {} | Not logged in (Tab to Sessions pane, Enter to login)",
-                selected_session_name
-            )
-        };
-
-        let mut status_lines = vec![Line::from(status_text)];
-        if let Some(ref msg) = self.status_message {
-            status_lines.push(Line::from(msg.clone()));
-        }
-
-        let status = Paragraph::new(status_lines)
-            .block(Block::default().borders(Borders::ALL).title("Status"));
-        f.render_widget(status, chunks[3]);
-
-        // Help bar
-        let help_bar = Paragraph::new(
-            "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | Enter:toggle | Sessions: a:add e:edit d:delete | Accounts: p:profile d:default c:console r:refresh"
-        )
+        // Help bar (2 lines for better readability)
+        let help_lines = vec![
+            Line::from(vec![Span::raw(
+                "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | Enter:toggle",
+            )]),
+            Line::from(vec![
+                Span::raw("Sessions: "),
+                Span::styled("a", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":add "),
+                Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":edit "),
+                Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":delete | Accounts: "),
+                Span::styled("p", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":profile "),
+                Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":default "),
+                Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":console "),
+                Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":refresh"),
+            ]),
+        ];
+        let help_bar = Paragraph::new(help_lines)
             .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
-        f.render_widget(help_bar, chunks[4]);
+        f.render_widget(help_bar, chunks[3]);
     }
 
     fn draw_sessions_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
