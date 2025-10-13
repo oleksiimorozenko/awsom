@@ -216,16 +216,17 @@ jobs:
             license "Apache-2.0"
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-arm64.tar.gz"
-                sha256 "MACOS_ARM64_SHA256_PLACEHOLDER"
+              if Hardware::CPU.intel?
+                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-amd64.tar.gz"
+                sha256 "MACOS_AMD64_SHA256_PLACEHOLDER"
 
                 def install
                   bin.install "awsom"
                 end
-              elsif Hardware::CPU.intel?
-                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-amd64.tar.gz"
-                sha256 "MACOS_AMD64_SHA256_PLACEHOLDER"
+              end
+              if Hardware::CPU.arm?
+                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-arm64.tar.gz"
+                sha256 "MACOS_ARM64_SHA256_PLACEHOLDER"
 
                 def install
                   bin.install "awsom"
@@ -234,16 +235,17 @@ jobs:
             end
 
             on_linux do
-              if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-arm64.tar.gz"
-                sha256 "LINUX_ARM64_SHA256_PLACEHOLDER"
+              if Hardware::CPU.intel? and Hardware::CPU.is_64_bit?
+                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-amd64.tar.gz"
+                sha256 "LINUX_AMD64_SHA256_PLACEHOLDER"
 
                 def install
                   bin.install "awsom"
                 end
-              elsif Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-amd64.tar.gz"
-                sha256 "LINUX_AMD64_SHA256_PLACEHOLDER"
+              end
+              if Hardware::CPU.arm? and Hardware::CPU.is_64_bit?
+                url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-arm64.tar.gz"
+                sha256 "LINUX_ARM64_SHA256_PLACEHOLDER"
 
                 def install
                   bin.install "awsom"
