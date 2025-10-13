@@ -14,7 +14,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, ListState, Paragraph, Row, Table},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, TableState,
+    },
     Frame, Terminal,
 };
 use std::collections::HashMap;
@@ -57,12 +60,12 @@ pub struct App {
     active_pane: ActivePane,
     /// List of SSO sessions with their status
     sso_sessions: Vec<SsoSessionInfo>,
-    /// SSO sessions list selection state
-    sessions_list_state: ListState,
+    /// SSO sessions table selection state
+    sessions_list_state: TableState,
     /// List of accounts and roles with their active status (filtered by selected session)
     accounts: Vec<AccountRoleWithStatus>,
-    /// Accounts list selection state
-    accounts_list_state: ListState,
+    /// Accounts table selection state
+    accounts_list_state: TableState,
     /// Authentication manager
     auth_manager: AuthManager,
     /// Credential manager
@@ -153,9 +156,9 @@ impl App {
             state: AppState::Main,
             active_pane: ActivePane::Sessions,
             sso_sessions: Vec::new(),
-            sessions_list_state: ListState::default(),
+            sessions_list_state: TableState::default(),
             accounts: Vec::new(),
-            accounts_list_state: ListState::default(),
+            accounts_list_state: TableState::default(),
             auth_manager,
             credential_manager,
             sso_instance: None,
@@ -1946,14 +1949,25 @@ impl App {
     }
 
     fn draw_main_screen(&mut self, f: &mut Frame) {
+        // Calculate dynamic sessions pane height
+        // Min 5 lines (1 border top + 1 header + 1 header margin + 1 content + 1 border bottom)
+        // Max 10 lines to avoid taking too much space
+        let sessions_count = self.sso_sessions.len();
+        let sessions_height = if sessions_count == 0 {
+            5 // Minimum height for empty pane
+        } else {
+            // 3 for borders + header, plus 1 line per session, max 10 total
+            std::cmp::min(sessions_count + 3, 10)
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),      // Header
-                Constraint::Percentage(40), // Accounts pane (top)
-                Constraint::Percentage(30), // Sessions pane (bottom)
-                Constraint::Length(3),      // Status
-                Constraint::Length(1),      // Help bar
+                Constraint::Length(3),                      // Header
+                Constraint::Min(10),                        // Accounts pane (flexible)
+                Constraint::Length(sessions_height as u16), // Sessions pane (dynamic)
+                Constraint::Length(3),                      // Status
+                Constraint::Length(1),                      // Help bar
             ])
             .split(f.area());
 
@@ -1968,13 +1982,10 @@ impl App {
         f.render_widget(header, chunks[0]);
 
         // Account/Role table
-        let selected_index = self.accounts_list_state.selected().unwrap_or(0);
-
         let rows: Vec<Row> = self
             .accounts
             .iter()
-            .enumerate()
-            .map(|(idx, account_with_status)| {
+            .map(|account_with_status| {
                 let account = &account_with_status.account_role;
 
                 // Status indicator
@@ -2016,25 +2027,14 @@ impl App {
                     "".to_string()
                 };
 
-                let row = Row::new(vec![
+                Row::new(vec![
                     Cell::from(status),
                     Cell::from(default_mark),
                     Cell::from(account.account_name.clone()),
                     Cell::from(account.account_id.clone()),
                     Cell::from(account.role_name.clone()),
                     Cell::from(expiration_status),
-                ]);
-
-                // Highlight selected row
-                if idx == selected_index {
-                    row.style(
-                        Style::default()
-                            .bg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    row
-                }
+                ])
             })
             .collect();
 
@@ -2077,9 +2077,33 @@ impl App {
                 .borders(Borders::ALL)
                 .title("Accounts & Roles")
                 .border_style(accounts_block_style),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
         );
 
-        f.render_widget(table, chunks[1]);
+        f.render_stateful_widget(table, chunks[1], &mut self.accounts_list_state);
+
+        // Render scrollbar for accounts pane
+        if !self.accounts.is_empty() {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let mut scrollbar_state = ScrollbarState::new(self.accounts.len())
+                .position(self.accounts_list_state.selected().unwrap_or(0));
+
+            f.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(ratatui::layout::Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
 
         // Sessions pane
         self.draw_sessions_pane(f, chunks[2]);
@@ -2129,14 +2153,11 @@ impl App {
         f.render_widget(help_bar, chunks[4]);
     }
 
-    fn draw_sessions_pane(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let selected_index = self.sessions_list_state.selected().unwrap_or(0);
-
+    fn draw_sessions_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
         let rows: Vec<Row> = self
             .sso_sessions
             .iter()
-            .enumerate()
-            .map(|(idx, session)| {
+            .map(|session| {
                 // Status indicator
                 let status = if session.is_active { "🟢" } else { "🔴" };
 
@@ -2165,23 +2186,12 @@ impl App {
                     "".to_string()
                 };
 
-                let row = Row::new(vec![
+                Row::new(vec![
                     Cell::from(status),
                     Cell::from(session.session_name.clone()),
                     Cell::from(session.start_url.clone()),
                     Cell::from(expiration_status),
-                ]);
-
-                // Highlight selected row
-                if idx == selected_index {
-                    row.style(
-                        Style::default()
-                            .bg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    row
-                }
+                ])
             })
             .collect();
 
@@ -2220,9 +2230,33 @@ impl App {
                 .borders(Borders::ALL)
                 .title("SSO Sessions")
                 .border_style(sessions_block_style),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
         );
 
-        f.render_widget(table, area);
+        f.render_stateful_widget(table, area, &mut self.sessions_list_state);
+
+        // Render scrollbar for sessions pane
+        if !self.sso_sessions.is_empty() {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let mut scrollbar_state = ScrollbarState::new(self.sso_sessions.len())
+                .position(self.sessions_list_state.selected().unwrap_or(0));
+
+            f.render_stateful_widget(
+                scrollbar,
+                area.inner(ratatui::layout::Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn draw_help_screen(&self, f: &mut Frame) {
