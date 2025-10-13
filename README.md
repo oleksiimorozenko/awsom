@@ -36,9 +36,27 @@ cargo install awsom
 
 ### Using Homebrew (macOS/Linux)
 
+**Linux Prerequisites:**
+On Linux systems, you need to install `build-essential` before using Homebrew, even though awsom provides pre-built binaries. This is a Homebrew requirement because some of Homebrew's own dependencies may need to be compiled from source:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y build-essential
+
+# Then install awsom
+brew install oleksiimorozenko/tap/awsom
+```
+
+**macOS:**
 ```bash
 brew install oleksiimorozenko/tap/awsom
 ```
+
+**Why build-essential on Linux?**
+Homebrew on Linux requires compiler tools (`gcc`, `make`, etc.) to be available on the system. According to the [Homebrew on Linux documentation](https://docs.brew.sh/Homebrew-on-Linux), "Homebrew does not use any libraries provided by your host system, except glibc and gcc if they are new enough." While Homebrew provides pre-compiled binaries (bottles) for most packages, [some dependencies will need to be built directly on your machine](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-homebrew-on-linux), which requires a working compiler environment.
+
+The `build-essential` package provides all the necessary compilation tools including GCC, GNU Make, and other essential development utilities.
 
 ### Download Pre-built Binaries
 
