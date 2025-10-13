@@ -11,9 +11,9 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
         Table, TableState,
@@ -2028,23 +2028,25 @@ impl App {
                 };
 
                 Row::new(vec![
-                    Cell::from(status),
-                    Cell::from(default_mark),
-                    Cell::from(account.account_name.clone()),
-                    Cell::from(account.account_id.clone()),
-                    Cell::from(account.role_name.clone()),
-                    Cell::from(expiration_status),
+                    Cell::new(Text::from(status).alignment(Alignment::Center)),
+                    Cell::new(Text::from(default_mark).alignment(Alignment::Center)),
+                    Cell::new(
+                        Text::from(account.account_name.clone()).alignment(Alignment::Center),
+                    ),
+                    Cell::new(Text::from(account.account_id.clone()).alignment(Alignment::Center)),
+                    Cell::new(Text::from(account.role_name.clone()).alignment(Alignment::Center)),
+                    Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
                 ])
             })
             .collect();
 
         let header = Row::new(vec![
-            Cell::from("Status"),
-            Cell::from("Def"),
-            Cell::from("Account"),
-            Cell::from("Account ID"),
-            Cell::from("Role"),
-            Cell::from("Expires"),
+            Cell::new(Text::from("Status").alignment(Alignment::Center)),
+            Cell::new(Text::from("Def").alignment(Alignment::Center)),
+            Cell::new(Text::from("Account").alignment(Alignment::Center)),
+            Cell::new(Text::from("Account ID").alignment(Alignment::Center)),
+            Cell::new(Text::from("Role").alignment(Alignment::Center)),
+            Cell::new(Text::from("Expires").alignment(Alignment::Center)),
         ])
         .style(
             Style::default()
@@ -2187,19 +2189,21 @@ impl App {
                 };
 
                 Row::new(vec![
-                    Cell::from(status),
-                    Cell::from(session.session_name.clone()),
-                    Cell::from(session.start_url.clone()),
-                    Cell::from(expiration_status),
+                    Cell::new(Text::from(status).alignment(Alignment::Center)),
+                    Cell::new(
+                        Text::from(session.session_name.clone()).alignment(Alignment::Center),
+                    ),
+                    Cell::new(Text::from(session.start_url.clone()).alignment(Alignment::Center)),
+                    Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
                 ])
             })
             .collect();
 
         let header = Row::new(vec![
-            Cell::from("Status"),
-            Cell::from("Session Name"),
-            Cell::from("Start URL"),
-            Cell::from("Expires"),
+            Cell::new(Text::from("Status").alignment(Alignment::Center)),
+            Cell::new(Text::from("Session Name").alignment(Alignment::Center)),
+            Cell::new(Text::from("Start URL").alignment(Alignment::Center)),
+            Cell::new(Text::from("Expires").alignment(Alignment::Center)),
         ])
         .style(
             Style::default()
