@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2025-10-13
+
+### Fixed
+- Fixed status indicator showing green for expired credentials - now correctly displays red circle when credentials are expired
+
+## [0.2.1] - 2024-10-13
+
+### Fixed
+- Static Linux binary builds
+- Homebrew formula generation to match k9s pattern
+- Linux prerequisites documentation for Homebrew installation
+
+## [0.2.0] - 2024-10-11
+
+### Added
+- Multi-session support with two-pane layout
+- Session management (add, edit, delete SSO sessions)
+- Auto-refresh of account list every minute
+- Improved keyboard navigation with Tab to switch panes
+- Session-specific account loading
+- Context-aware help text
+- Visual pane highlighting
+
+### Changed
+- Redesigned UI with Sessions and Accounts panes
+- Improved status indicators and expiration display
+- Enhanced error handling and user feedback
+
 ## [0.1.0] - 2025-10-10
 
 ### Added - Feature Complete Release ✅

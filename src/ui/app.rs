@@ -1797,10 +1797,19 @@ impl App {
                             {
                                 // Check if this is the default profile
                                 let is_default = status.profile_name == "default";
+
+                                // Check if credentials are expired
+                                let is_active = if let Some(expiration) = status.expiration {
+                                    chrono::Utc::now() < expiration
+                                } else {
+                                    // No expiration info means credentials exist but we can't verify validity
+                                    true
+                                };
+
                                 // Match by account ID and role name from metadata
                                 profile_map.insert(
                                     (account_id, role_name),
-                                    (true, status.expiration, is_default),
+                                    (is_active, status.expiration, is_default),
                                 );
                             }
                         }
