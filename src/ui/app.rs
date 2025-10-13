@@ -4,6 +4,7 @@ use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance, SsoToken};
 use crate::sso_config;
+use catppuccin::Flavor;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -22,6 +23,11 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::io;
+
+/// Convert Catppuccin color to Ratatui Color
+fn catppuccin_color(color: catppuccin::Color) -> Color {
+    Color::Rgb(color.rgb.r, color.rgb.g, color.rgb.b)
+}
 
 /// Wrapper for AccountRole with active status
 #[derive(Debug, Clone)]
@@ -104,6 +110,8 @@ pub struct App {
     new_profile_input_cursor: usize,
     /// Last automatic refresh time
     last_auto_refresh: Option<std::time::Instant>,
+    /// Catppuccin theme flavor
+    theme: Flavor,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +190,7 @@ impl App {
             new_profile_output_input: String::new(),
             new_profile_input_cursor: 0,
             last_auto_refresh: None,
+            theme: catppuccin::PALETTE.mocha,
         })
     }
 
@@ -1975,7 +1984,7 @@ impl App {
         let header = Paragraph::new("awsom - AWS Organization Manager")
             .style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(catppuccin_color(self.theme.colors.blue))
                     .add_modifier(Modifier::BOLD),
             )
             .block(Block::default().borders(Borders::ALL));
@@ -2050,16 +2059,16 @@ impl App {
         ])
         .style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(catppuccin_color(self.theme.colors.blue))
                 .add_modifier(Modifier::BOLD),
         )
         .bottom_margin(1);
 
         // Highlight accounts pane if it's active
         let accounts_block_style = if self.active_pane == ActivePane::Accounts {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(catppuccin_color(self.theme.colors.mauve))
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
         let table = Table::new(
@@ -2082,7 +2091,7 @@ impl App {
         )
         .row_highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(catppuccin_color(self.theme.colors.surface1))
                 .add_modifier(Modifier::BOLD),
         );
 
@@ -2151,7 +2160,7 @@ impl App {
         let help_bar = Paragraph::new(
             "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | Enter:toggle | Sessions: a:add e:edit d:delete | Accounts: p:profile d:default c:console r:refresh"
         )
-            .style(Style::default().fg(Color::Gray));
+            .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help_bar, chunks[4]);
     }
 
@@ -2207,16 +2216,16 @@ impl App {
         ])
         .style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(catppuccin_color(self.theme.colors.blue))
                 .add_modifier(Modifier::BOLD),
         )
         .bottom_margin(1);
 
         // Highlight sessions pane if it's active
         let sessions_block_style = if self.active_pane == ActivePane::Sessions {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(catppuccin_color(self.theme.colors.mauve))
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
         let table = Table::new(
@@ -2237,7 +2246,7 @@ impl App {
         )
         .row_highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(catppuccin_color(self.theme.colors.surface1))
                 .add_modifier(Modifier::BOLD),
         );
 
