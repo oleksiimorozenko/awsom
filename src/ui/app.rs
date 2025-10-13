@@ -94,6 +94,8 @@ pub struct App {
     device_auth_info: Option<DeviceAuthorizationInfo>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
+    /// Pending delete session (index, timestamp) for double-press confirmation
+    pending_delete_session: Option<(usize, std::time::Instant)>,
     /// SSO configuration input buffers
     sso_start_url_input: String,
     sso_region_input: String,
@@ -178,6 +180,7 @@ impl App {
             existing_profile_name: None,
             device_auth_info: None,
             last_ctrl_c_time: None,
+            pending_delete_session: None,
             sso_start_url_input: String::new(),
             sso_region_input: String::new(),
             sso_session_name_input: "default-sso".to_string(),
@@ -660,12 +663,17 @@ impl App {
 
     /// Add a new SSO session
     async fn add_sso_session(&mut self) -> Result<()> {
-        self.status_message = Some("Add SSO session - not yet implemented".to_string());
-        // TODO: Implement session add dialog
-        // Will need to:
-        // 1. Show input dialog for session_name, sso_start_url, sso_region
-        // 2. Write to ~/.aws/config
-        // 3. Reload sessions list
+        // Clear input buffers for fresh start
+        self.sso_start_url_input.clear();
+        self.sso_region_input.clear();
+        self.sso_session_name_input = "default-sso".to_string();
+        self.sso_input_cursor = 0;
+
+        // Show SSO configuration input dialog
+        self.state = AppState::SsoConfigInput {
+            step: SsoConfigStep::StartUrl,
+        };
+        self.status_message = Some("Add new SSO session".to_string());
         Ok(())
     }
 
@@ -673,15 +681,17 @@ impl App {
     async fn edit_sso_session(&mut self) -> Result<()> {
         if let Some(index) = self.sessions_list_state.selected() {
             if let Some(session) = self.sso_sessions.get(index) {
-                self.status_message = Some(format!(
-                    "Edit SSO session '{}' - not yet implemented",
-                    session.session_name
-                ));
-                // TODO: Implement session edit dialog
-                // Will need to:
-                // 1. Show input dialog pre-filled with current values
-                // 2. Update ~/.aws/config
-                // 3. Reload sessions list
+                // Pre-fill input buffers with current session values
+                self.sso_start_url_input = session.start_url.clone();
+                self.sso_region_input = session.region.clone();
+                self.sso_session_name_input = session.session_name.clone();
+                self.sso_input_cursor = self.sso_start_url_input.len();
+
+                // Show SSO configuration input dialog
+                self.state = AppState::SsoConfigInput {
+                    step: SsoConfigStep::StartUrl,
+                };
+                self.status_message = Some(format!("Edit SSO session '{}'", session.session_name));
             }
         } else {
             self.status_message = Some("No session selected".to_string());
@@ -689,33 +699,58 @@ impl App {
         Ok(())
     }
 
-    /// Delete the selected SSO session
+    /// Delete the selected SSO session (requires confirmation via double-press)
     async fn delete_sso_session(&mut self) -> Result<()> {
         if let Some(index) = self.sessions_list_state.selected() {
-            if let Some(session) = self.sso_sessions.get(index).cloned() {
-                // First, logout if the session is active
-                if session.is_active {
-                    self.logout_session(index).await?;
+            let now = std::time::Instant::now();
+
+            // Check if this is a confirmation press
+            if let Some((pending_index, last_press)) = self.pending_delete_session {
+                if pending_index == index && now.duration_since(last_press).as_secs() < 2 {
+                    // Double press confirmed - actually delete
+                    if let Some(session) = self.sso_sessions.get(index).cloned() {
+                        // First, logout if the session is active
+                        if session.is_active {
+                            self.logout_session(index).await?;
+                        }
+
+                        // Delete from ~/.aws/config file
+                        if let Err(e) = crate::aws_config::delete_sso_session(&session.session_name)
+                        {
+                            self.status_message =
+                                Some(format!("Error deleting session from config: {}", e));
+                            self.pending_delete_session = None;
+                            return Ok(());
+                        }
+
+                        // Remove from the sessions list
+                        self.sso_sessions.remove(index);
+
+                        // Update selection
+                        if self.sso_sessions.is_empty() {
+                            self.sessions_list_state.select(None);
+                        } else if index >= self.sso_sessions.len() {
+                            self.sessions_list_state
+                                .select(Some(self.sso_sessions.len() - 1));
+                        }
+
+                        self.status_message = Some(format!(
+                            "✓ Deleted session '{}' from ~/.aws/config",
+                            session.session_name
+                        ));
+                        self.pending_delete_session = None;
+                    }
+                    return Ok(());
                 }
+            }
 
-                // Remove from the sessions list
-                self.sso_sessions.remove(index);
-
-                // Update selection
-                if self.sso_sessions.is_empty() {
-                    self.sessions_list_state.select(None);
-                } else if index >= self.sso_sessions.len() {
-                    self.sessions_list_state
-                        .select(Some(self.sso_sessions.len() - 1));
-                }
-
+            // First press - ask for confirmation
+            if let Some(session) = self.sso_sessions.get(index) {
+                self.pending_delete_session = Some((index, now));
                 self.status_message = Some(format!(
-                    "✓ Deleted session '{}' (from memory only, still in ~/.aws/config)",
+                    "Press 'd' again within 2 seconds to confirm deletion of session '{}'",
                     session.session_name
                 ));
-
-                // TODO: Also remove from ~/.aws/config file
-                // For now, we only remove from memory - the session will reappear on restart
             }
         } else {
             self.status_message = Some("No session selected".to_string());
@@ -1009,7 +1044,7 @@ impl App {
                         match crate::aws_config::write_sso_session(&session) {
                             Ok(()) => {
                                 self.status_message = Some(format!(
-                                    "✓ SSO configuration saved to ~/.aws/config as [sso-session {}]",
+                                    "✓ SSO session '{}' saved to ~/.aws/config",
                                     session_name
                                 ));
                                 self.state = AppState::Main;
@@ -1020,8 +1055,8 @@ impl App {
                                 self.sso_session_name_input = "default-sso".to_string();
                                 self.sso_input_cursor = 0;
 
-                                // Automatically trigger login
-                                self.login().await?;
+                                // Reload sessions list to show the new session
+                                self.load_all_sso_sessions().await;
                             }
                             Err(e) => {
                                 self.status_message =

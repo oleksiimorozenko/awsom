@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-10-13
+
+### Added
+- **Config File Organization System**:
+  - Marker-based separation of user-managed and awsom-managed sections
+  - User-managed sections preserved above marker line
+  - Awsom-managed sections automatically organized below marker line
+  - Automatic alphabetical sorting within awsom-managed area
+  - One-time backups on first run: `config-before-awsom.bak`, `credentials-before-awsom.bak`
+  - Marker file (`~/.aws/.awsom-initialized`) to track initialization
+  - Header comments in config/credentials files explaining backup location and management
+- **Import Command** for migrating existing configurations:
+  - `awsom import <name> --section-type <profile|sso-session>` - Import existing sections to awsom management
+  - Interactive confirmation with preview (bypass with `--force`)
+  - Moves sections from user-managed to awsom-managed area
+  - Maintains proper formatting and alphabetical sorting after import
+- **Profile Collision Detection**:
+  - Prevents accidental overwrites of user-managed profiles
+  - Clear error messages suggesting import command
+  - Protects user configurations from unintended modifications
+- **Session Management CLI Commands** for automation and scripting:
+  - `awsom session add` - Add new SSO sessions via CLI
+  - `awsom session list` - List all sessions (text/JSON formats)
+  - `awsom session delete` - Delete sessions with optional `--force` flag
+  - `awsom session edit` - Edit session start URL and/or region
+  - `awsom session switch` - Switch between sessions (placeholder for multi-session support)
+- **TUI Session Management Improvements**:
+  - 'a' button: Add new SSO session dialog
+  - 'e' button: Edit existing SSO session dialog
+  - 'd' button: Delete session with double-press confirmation (2-second window)
+
+### Fixed
+- TUI 'a' button (add session) - now shows SSO configuration dialog
+- TUI 'e' button (edit session) - pre-fills dialog with current values
+- TUI 'd' button (delete session) - now actually deletes from ~/.aws/config file with confirmation
+
+### Documentation
+- Added "No AWS CLI Required!" section in README highlighting standalone nature
+- Documented all session CLI commands with examples
+- Documented import command with use cases
+- Added automation/provisioning script examples
+- Updated prerequisites to clarify AWS CLI is optional
+
 ## [0.2.2] - 2025-10-13
 
 ### Fixed

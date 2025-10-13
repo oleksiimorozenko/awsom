@@ -107,6 +107,29 @@ pub enum Commands {
     /// Logout from AWS SSO
     Logout,
 
+    /// Manage SSO sessions
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+
+    /// Import profiles or SSO sessions from user-managed section to awsom management
+    ///
+    /// Moves sections from above the "Managed by awsom" marker to below it,
+    /// allowing awsom to manage them with automatic sorting and organization.
+    Import {
+        /// Profile or SSO session name to import
+        name: String,
+
+        /// Type of section to import (profile or sso-session)
+        #[arg(short, long, default_value = "profile")]
+        section_type: String,
+
+        /// Force import without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
     /// Generate shell completion scripts
     ///
     /// INSTALLATION:
@@ -129,6 +152,61 @@ pub enum Commands {
         /// Shell type to generate completions for
         #[arg(value_enum)]
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCommands {
+    /// Add a new SSO session
+    Add {
+        /// Session name
+        #[arg(long)]
+        name: String,
+
+        /// SSO start URL
+        #[arg(long)]
+        start_url: String,
+
+        /// SSO region
+        #[arg(long)]
+        region: String,
+    },
+
+    /// List all SSO sessions
+    List {
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Delete an SSO session
+    Delete {
+        /// Session name to delete
+        name: String,
+
+        /// Force deletion without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Edit an SSO session
+    Edit {
+        /// Session name to edit
+        name: String,
+
+        /// New SSO start URL (optional)
+        #[arg(long)]
+        start_url: Option<String>,
+
+        /// New SSO region (optional)
+        #[arg(long)]
+        region: Option<String>,
+    },
+
+    /// Switch to a different SSO session (for multi-session support)
+    Switch {
+        /// Session name to switch to
+        name: String,
     },
 }
 
@@ -170,6 +248,12 @@ pub async fn execute(args: Cli) -> Result<()> {
         }) => commands::console::execute(account_id, account_name, role_name, region).await,
         Some(Commands::Status { json }) => commands::status::execute(json).await,
         Some(Commands::Logout) => commands::logout::execute(args.start_url, args.region).await,
+        Some(Commands::Session { command }) => commands::session::execute(command).await,
+        Some(Commands::Import {
+            name,
+            section_type,
+            force,
+        }) => commands::import::execute(name, section_type, force).await,
         Some(Commands::Completions { shell }) => {
             commands::completions::execute(shell);
             Ok(())
