@@ -58,13 +58,13 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux x86_64
+          # Linux x86_64 (static binary using musl)
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             archive_name: awsom-linux-amd64
-          # Linux ARM64
+          # Linux ARM64 (static binary using musl)
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             archive_name: awsom-linux-arm64
           # macOS x86_64
           - os: macos-latest
@@ -80,6 +80,18 @@ jobs:
             archive_name: awsom-windows-amd64
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install musl tools (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install musl tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -219,24 +231,36 @@ jobs:
               if Hardware::CPU.arm?
                 url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-arm64.tar.gz"
                 sha256 "MACOS_ARM64_SHA256_PLACEHOLDER"
-              else
+
+                def install
+                  bin.install "awsom"
+                end
+              elsif Hardware::CPU.intel?
                 url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-macos-amd64.tar.gz"
                 sha256 "MACOS_AMD64_SHA256_PLACEHOLDER"
+
+                def install
+                  bin.install "awsom"
+                end
               end
             end
 
             on_linux do
-              if Hardware::CPU.arm?
+              if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
                 url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-arm64.tar.gz"
                 sha256 "LINUX_ARM64_SHA256_PLACEHOLDER"
-              else
+
+                def install
+                  bin.install "awsom"
+                end
+              elsif Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
                 url "https://github.com/oleksiimorozenko/awsom/releases/download/vVERSION_PLACEHOLDER/awsom-linux-amd64.tar.gz"
                 sha256 "LINUX_AMD64_SHA256_PLACEHOLDER"
-              end
-            end
 
-            def install
-              bin.install "awsom"
+                def install
+                  bin.install "awsom"
+                end
+              end
             end
 
             test do
