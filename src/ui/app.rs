@@ -1624,9 +1624,15 @@ impl App {
     async fn load_all_sso_sessions(&mut self) {
         match crate::aws_config::read_all_sso_sessions() {
             Ok(sessions) => {
+                tracing::info!("Loaded {} raw sessions from config", sessions.len());
                 let mut sso_session_infos = Vec::new();
 
                 for session in sessions {
+                    tracing::info!(
+                        "Processing session: {} ({})",
+                        session.session_name,
+                        session.sso_start_url
+                    );
                     let instance = SsoInstance {
                         start_url: session.sso_start_url.clone(),
                         region: session.sso_region.clone(),
@@ -1960,13 +1966,13 @@ impl App {
     fn draw_main_screen(&mut self, f: &mut Frame) {
         // Calculate dynamic sessions pane height
         // Min 5 lines (1 border top + 1 header + 1 header margin + 1 content + 1 border bottom)
-        // Max 10 lines to avoid taking too much space
+        // Max 12 lines to avoid taking too much space
         let sessions_count = self.sso_sessions.len();
         let sessions_height = if sessions_count == 0 {
             5 // Minimum height for empty pane
         } else {
-            // 3 for borders + header, plus 1 line per session, max 10 total
-            std::cmp::min(sessions_count + 3, 10)
+            // 4 for borders + header + header margin, plus 1 line per session, max 12 total
+            std::cmp::min(sessions_count + 4, 12)
         };
 
         let chunks = Layout::default()

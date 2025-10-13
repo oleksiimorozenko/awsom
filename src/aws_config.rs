@@ -129,12 +129,14 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
     let config_path = config_file_path()?;
 
     if !config_path.exists() {
+        tracing::info!("Config file does not exist: {:?}", config_path);
         return Ok(Vec::new());
     }
 
     let content = fs::read_to_string(&config_path)
         .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
 
+    tracing::info!("Reading config file: {:?}", config_path);
     let mut sessions = Vec::new();
     let mut in_sso_session = false;
     let mut session_name: Option<String> = None;
@@ -156,12 +158,19 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
                             .cloned()
                             .unwrap_or_else(|| "sso:account:access".to_string());
 
-                        sessions.push(SsoSession {
-                            session_name: name,
+                        let session = SsoSession {
+                            session_name: name.clone(),
                             sso_start_url: start_url.clone(),
                             sso_region: region.clone(),
                             sso_registration_scopes: scopes,
-                        });
+                        };
+                        tracing::info!(
+                            "Adding session: {} ({}, {})",
+                            session.session_name,
+                            session.sso_start_url,
+                            session.sso_region
+                        );
+                        sessions.push(session);
                     }
                 }
                 session_data.clear();
@@ -172,6 +181,7 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
                 in_sso_session = true;
                 let name_part = &trimmed[13..trimmed.len() - 1]; // Extract name between "[sso-session " and "]"
                 session_name = Some(name_part.trim().to_string());
+                tracing::info!("Found SSO session header: {}", name_part.trim());
             } else {
                 in_sso_session = false;
                 session_name = None;
@@ -201,16 +211,30 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
                     .cloned()
                     .unwrap_or_else(|| "sso:account:access".to_string());
 
-                sessions.push(SsoSession {
-                    session_name: name,
+                let session = SsoSession {
+                    session_name: name.clone(),
                     sso_start_url: start_url.clone(),
                     sso_region: region.clone(),
                     sso_registration_scopes: scopes,
-                });
+                };
+                tracing::info!(
+                    "Adding last session: {} ({}, {})",
+                    session.session_name,
+                    session.sso_start_url,
+                    session.sso_region
+                );
+                sessions.push(session);
+            } else {
+                tracing::info!(
+                    "Incomplete session at end: name={:?}, data={:?}",
+                    name,
+                    session_data
+                );
             }
         }
     }
 
+    tracing::info!("Total sessions found: {}", sessions.len());
     Ok(sessions)
 }
 
