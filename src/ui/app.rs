@@ -353,14 +353,6 @@ impl App {
                     }
                 ));
             }
-            KeyCode::Char('l') => {
-                // Toggle login/logout
-                if self.sso_token.is_some() {
-                    self.logout().await?;
-                } else {
-                    self.login().await?;
-                }
-            }
             KeyCode::Char('r') => {
                 // Refresh account list
                 if self.sso_token.is_some() {
@@ -368,7 +360,10 @@ impl App {
                     // Reset auto-refresh timer after manual refresh
                     self.last_auto_refresh = Some(std::time::Instant::now());
                 } else {
-                    self.status_message = Some("Not logged in. Press 'l' to login.".to_string());
+                    self.status_message = Some(
+                        "Not logged in. Switch to Sessions pane (Tab) and press Enter to login."
+                            .to_string(),
+                    );
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => match self.active_pane {
@@ -391,17 +386,38 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('p') => {
-                // Edit profile name
-                self.edit_profile_name().await?;
+            KeyCode::Char('a') => {
+                if self.active_pane == ActivePane::Sessions {
+                    self.add_sso_session().await?;
+                }
+            }
+            KeyCode::Char('e') => {
+                if self.active_pane == ActivePane::Sessions {
+                    self.edit_sso_session().await?;
+                }
             }
             KeyCode::Char('d') => {
-                // Set as default profile
-                self.set_as_default().await?;
+                match self.active_pane {
+                    ActivePane::Sessions => {
+                        self.delete_sso_session().await?;
+                    }
+                    ActivePane::Accounts => {
+                        // Set as default profile
+                        self.set_as_default().await?;
+                    }
+                }
+            }
+            KeyCode::Char('p') => {
+                if self.active_pane == ActivePane::Accounts {
+                    // Edit profile name
+                    self.edit_profile_name().await?;
+                }
             }
             KeyCode::Char('c') => {
-                // Open AWS Console in browser
-                self.open_console().await?;
+                if self.active_pane == ActivePane::Accounts {
+                    // Open AWS Console in browser
+                    self.open_console().await?;
+                }
             }
             _ => {}
         }
@@ -459,6 +475,21 @@ impl App {
         self.sessions_list_state.select(Some(i));
         // Update current session
         self.update_current_session_from_selection();
+
+        // Show which session is now selected
+        if let Some(session) = self.sso_sessions.get(i) {
+            if session.is_active {
+                self.status_message = Some(format!(
+                    "Selected session '{}' - press 'r' in Accounts pane to load accounts",
+                    session.session_name
+                ));
+            } else {
+                self.status_message = Some(format!(
+                    "Selected session '{}' (inactive - press Enter to login)",
+                    session.session_name
+                ));
+            }
+        }
     }
 
     fn previous_session(&mut self) {
@@ -478,6 +509,21 @@ impl App {
         self.sessions_list_state.select(Some(i));
         // Update current session
         self.update_current_session_from_selection();
+
+        // Show which session is now selected
+        if let Some(session) = self.sso_sessions.get(i) {
+            if session.is_active {
+                self.status_message = Some(format!(
+                    "Selected session '{}' - press 'r' in Accounts pane to load accounts",
+                    session.session_name
+                ));
+            } else {
+                self.status_message = Some(format!(
+                    "Selected session '{}' (inactive - press Enter to login)",
+                    session.session_name
+                ));
+            }
+        }
     }
 
     /// Update current sso_instance and sso_token based on selected session
@@ -596,6 +642,71 @@ impl App {
             }
 
             self.status_message = Some(format!("✓ Logged out from {}", session.session_name));
+        }
+        Ok(())
+    }
+
+    /// Add a new SSO session
+    async fn add_sso_session(&mut self) -> Result<()> {
+        self.status_message = Some("Add SSO session - not yet implemented".to_string());
+        // TODO: Implement session add dialog
+        // Will need to:
+        // 1. Show input dialog for session_name, sso_start_url, sso_region
+        // 2. Write to ~/.aws/config
+        // 3. Reload sessions list
+        Ok(())
+    }
+
+    /// Edit the selected SSO session
+    async fn edit_sso_session(&mut self) -> Result<()> {
+        if let Some(index) = self.sessions_list_state.selected() {
+            if let Some(session) = self.sso_sessions.get(index) {
+                self.status_message = Some(format!(
+                    "Edit SSO session '{}' - not yet implemented",
+                    session.session_name
+                ));
+                // TODO: Implement session edit dialog
+                // Will need to:
+                // 1. Show input dialog pre-filled with current values
+                // 2. Update ~/.aws/config
+                // 3. Reload sessions list
+            }
+        } else {
+            self.status_message = Some("No session selected".to_string());
+        }
+        Ok(())
+    }
+
+    /// Delete the selected SSO session
+    async fn delete_sso_session(&mut self) -> Result<()> {
+        if let Some(index) = self.sessions_list_state.selected() {
+            if let Some(session) = self.sso_sessions.get(index).cloned() {
+                // First, logout if the session is active
+                if session.is_active {
+                    self.logout_session(index).await?;
+                }
+
+                // Remove from the sessions list
+                self.sso_sessions.remove(index);
+
+                // Update selection
+                if self.sso_sessions.is_empty() {
+                    self.sessions_list_state.select(None);
+                } else if index >= self.sso_sessions.len() {
+                    self.sessions_list_state
+                        .select(Some(self.sso_sessions.len() - 1));
+                }
+
+                self.status_message = Some(format!(
+                    "✓ Deleted session '{}' (from memory only, still in ~/.aws/config)",
+                    session.session_name
+                ));
+
+                // TODO: Also remove from ~/.aws/config file
+                // For now, we only remove from memory - the session will reappear on restart
+            }
+        } else {
+            self.status_message = Some("No session selected".to_string());
         }
         Ok(())
     }
@@ -1489,7 +1600,10 @@ impl App {
         self.sso_instance = None;
         self.accounts.clear();
         self.accounts_list_state.select(None);
-        self.status_message = Some("Logged out successfully. Press 'l' to login.".to_string());
+        self.status_message = Some(
+            "Logged out successfully. Switch to Sessions pane (Tab) and press Enter to login."
+                .to_string(),
+        );
 
         Ok(())
     }
@@ -1557,7 +1671,7 @@ impl App {
         // Check if SSO config is available
         if !sso_config::has_sso_config(None, None) {
             self.status_message = Some(
-                "SSO not configured. Press 'l' to login or configure [sso-session] in ~/.aws/config".to_string()
+                "SSO not configured. Configure [sso-session] in ~/.aws/config or add a session using 'a'".to_string()
             );
             return;
         }
@@ -1593,12 +1707,15 @@ impl App {
                 } else {
                     tracing::info!("Cached SSO token has expired");
                     self.status_message =
-                        Some("Cached token expired. Press 'l' to login.".to_string());
+                        Some("Cached token expired. Switch to Sessions pane (Tab) and press Enter to login.".to_string());
                 }
             }
             Ok(None) => {
                 tracing::info!("No cached SSO token found");
-                self.status_message = Some("Not logged in. Press 'l' to login.".to_string());
+                self.status_message = Some(
+                    "Not logged in. Switch to Sessions pane (Tab) and press Enter to login."
+                        .to_string(),
+                );
             }
             Err(e) => {
                 tracing::warn!("Error loading cached token: {}", e);
@@ -1832,10 +1949,11 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header
-                Constraint::Min(0),    // Content
-                Constraint::Length(3), // Status
-                Constraint::Length(1), // Help bar
+                Constraint::Length(3),      // Header
+                Constraint::Percentage(40), // Accounts pane (top)
+                Constraint::Percentage(30), // Sessions pane (bottom)
+                Constraint::Length(3),      // Status
+                Constraint::Length(1),      // Help bar
             ])
             .split(f.area());
 
@@ -1935,6 +2053,13 @@ impl App {
         )
         .bottom_margin(1);
 
+        // Highlight accounts pane if it's active
+        let accounts_block_style = if self.active_pane == ActivePane::Accounts {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
         let table = Table::new(
             rows,
             [
@@ -1950,23 +2075,41 @@ impl App {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Accounts & Roles"),
+                .title("Accounts & Roles")
+                .border_style(accounts_block_style),
         );
 
         f.render_widget(table, chunks[1]);
 
+        // Sessions pane
+        self.draw_sessions_pane(f, chunks[2]);
+
         // Status bar
+        let selected_session_name = self
+            .sessions_list_state
+            .selected()
+            .and_then(|idx| self.sso_sessions.get(idx))
+            .map(|s| s.session_name.as_str())
+            .unwrap_or("None");
+
         let status_text = if let Some(ref token) = self.sso_token {
             if token.is_expired() {
-                "SSO Token: EXPIRED (press 'l' to re-login)".to_string()
+                format!(
+                    "Session: {} | SSO Token: EXPIRED (Tab to Sessions pane, Enter to re-login)",
+                    selected_session_name
+                )
             } else {
                 format!(
-                    "SSO Token: Valid (expires in {}) | Press 'l' to logout",
+                    "Session: {} | SSO Token: Valid (expires in {})",
+                    selected_session_name,
                     token.expiration_display()
                 )
             }
         } else {
-            "Not logged in (press 'l' to login)".to_string()
+            format!(
+                "Session: {} | Not logged in (Tab to Sessions pane, Enter to login)",
+                selected_session_name
+            )
         };
 
         let mut status_lines = vec![Line::from(status_text)];
@@ -1976,20 +2119,110 @@ impl App {
 
         let status = Paragraph::new(status_lines)
             .block(Block::default().borders(Borders::ALL).title("Status"));
-        f.render_widget(status, chunks[2]);
+        f.render_widget(status, chunks[3]);
 
         // Help bar
-        let login_logout = if self.sso_token.is_some() {
-            "logout"
-        } else {
-            "login"
-        };
-        let help_bar = Paragraph::new(format!(
-            "q:quit | ?:help | l:{} | r:refresh | ↑↓/jk:navigate | Enter:start/stop | p:profile | d:default | c:console",
-            login_logout
-        ))
+        let help_bar = Paragraph::new(
+            "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | Enter:toggle | Sessions: a:add e:edit d:delete | Accounts: p:profile d:default c:console r:refresh"
+        )
             .style(Style::default().fg(Color::Gray));
-        f.render_widget(help_bar, chunks[3]);
+        f.render_widget(help_bar, chunks[4]);
+    }
+
+    fn draw_sessions_pane(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let selected_index = self.sessions_list_state.selected().unwrap_or(0);
+
+        let rows: Vec<Row> = self
+            .sso_sessions
+            .iter()
+            .enumerate()
+            .map(|(idx, session)| {
+                // Status indicator
+                let status = if session.is_active { "🟢" } else { "🔴" };
+
+                // Expiration status
+                let expiration_status = if session.is_active {
+                    if let Some(expiration) = session.token_expiration {
+                        let now = chrono::Utc::now();
+                        let remaining_secs = (expiration - now).num_seconds();
+
+                        if remaining_secs > 0 {
+                            let hours = remaining_secs / 3600;
+                            let mins = (remaining_secs % 3600) / 60;
+
+                            if hours > 0 {
+                                format!("{}h {}m", hours, mins)
+                            } else {
+                                format!("{}m", mins)
+                            }
+                        } else {
+                            "EXPIRED".to_string()
+                        }
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                let row = Row::new(vec![
+                    Cell::from(status),
+                    Cell::from(session.session_name.clone()),
+                    Cell::from(session.start_url.clone()),
+                    Cell::from(expiration_status),
+                ]);
+
+                // Highlight selected row
+                if idx == selected_index {
+                    row.style(
+                        Style::default()
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    row
+                }
+            })
+            .collect();
+
+        let header = Row::new(vec![
+            Cell::from("Status"),
+            Cell::from("Session Name"),
+            Cell::from("Start URL"),
+            Cell::from("Expires"),
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1);
+
+        // Highlight sessions pane if it's active
+        let sessions_block_style = if self.active_pane == ActivePane::Sessions {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(6),  // Status
+                Constraint::Min(20),    // Session Name
+                Constraint::Min(30),    // Start URL
+                Constraint::Length(10), // Expiration
+            ],
+        )
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("SSO Sessions")
+                .border_style(sessions_block_style),
+        );
+
+        f.render_widget(table, area);
     }
 
     fn draw_help_screen(&self, f: &mut Frame) {
@@ -2001,18 +2234,27 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from("Keyboard Shortcuts:"),
-            Line::from(""),
-            Line::from("  q, Esc      - Quit application"),
-            Line::from("  ?, F1       - Show this help screen"),
-            Line::from("  l           - Login/Logout (toggle)"),
-            Line::from("  r           - Refresh account/role list"),
+            Line::from("Navigation:"),
+            Line::from("  Tab         - Switch between Sessions and Accounts panes"),
             Line::from("  ↑, k        - Move selection up"),
             Line::from("  ↓, j        - Move selection down"),
+            Line::from(""),
+            Line::from("Sessions Pane:"),
+            Line::from("  Enter       - Login/Logout selected SSO session"),
+            Line::from("  a           - Add new SSO session"),
+            Line::from("  e           - Edit selected SSO session"),
+            Line::from("  d           - Delete selected SSO session"),
+            Line::from(""),
+            Line::from("Accounts Pane:"),
             Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
             Line::from("  p           - Edit profile name for selected role"),
             Line::from("  d           - Set selected role's profile as default"),
             Line::from("  c           - Open AWS Console in browser for selected role"),
+            Line::from("  r           - Refresh account/role list"),
+            Line::from(""),
+            Line::from("General:"),
+            Line::from("  q, Esc      - Quit application"),
+            Line::from("  ?, F1       - Show this help screen"),
             Line::from(""),
             Line::from(Span::styled(
                 "Press any key to return to main screen",
