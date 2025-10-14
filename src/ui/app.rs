@@ -23,6 +23,21 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::io;
+use tokio::sync::mpsc;
+
+/// Message type for background login tasks
+enum LoginResult {
+    Success {
+        session_index: usize,
+        token: SsoToken,
+        instance: SsoInstance,
+        session_name: String,
+    },
+    Error {
+        message: String,
+    },
+    Cancelled,
+}
 
 /// Convert Catppuccin color to Ratatui Color
 fn catppuccin_color(color: catppuccin::Color) -> Color {
@@ -92,6 +107,8 @@ pub struct App {
     existing_profile_name: Option<String>,
     /// Device authorization info during login
     device_auth_info: Option<DeviceAuthorizationInfo>,
+    /// Shared device authorization info from background task
+    device_auth_info_arc: Option<std::sync::Arc<std::sync::Mutex<Option<DeviceAuthorizationInfo>>>>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
     /// Pending delete session (index, timestamp) for double-press confirmation
@@ -114,6 +131,10 @@ pub struct App {
     last_auto_refresh: Option<std::time::Instant>,
     /// Catppuccin theme flavor
     theme: Flavor,
+    /// Channel for receiving login results from background tasks
+    login_rx: mpsc::UnboundedReceiver<LoginResult>,
+    /// Sender for login tasks (kept to create clones for background tasks)
+    login_tx: mpsc::UnboundedSender<LoginResult>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +182,9 @@ impl App {
         let auth_manager = AuthManager::new()?;
         let credential_manager = CredentialManager::new()?;
 
+        // Create channel for background login tasks
+        let (login_tx, login_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             should_quit: false,
             state: AppState::Main,
@@ -179,6 +203,7 @@ impl App {
             pending_role: None,
             existing_profile_name: None,
             device_auth_info: None,
+            device_auth_info_arc: None,
             last_ctrl_c_time: None,
             pending_delete_session: None,
             sso_start_url_input: String::new(),
@@ -194,6 +219,8 @@ impl App {
             new_profile_input_cursor: 0,
             last_auto_refresh: None,
             theme: catppuccin::PALETTE.mocha,
+            login_rx,
+            login_tx,
         })
     }
 
@@ -229,6 +256,14 @@ impl App {
         // Load accounts for selected session if active
         if self.sso_token.is_some() {
             let _ = self.load_accounts().await;
+
+            // If we successfully loaded accounts from an active session,
+            // default to Accounts pane for better UX
+            if !self.accounts.is_empty() {
+                self.active_pane = ActivePane::Accounts;
+                // Select first account
+                self.accounts_list_state.select(Some(0));
+            }
         }
 
         // Main event loop
@@ -251,6 +286,11 @@ impl App {
 
         loop {
             terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
+
+            // Check for login results from background tasks
+            while let Ok(result) = self.login_rx.try_recv() {
+                self.handle_login_result(result).await?;
+            }
 
             // Check if we need to auto-refresh (every 1 minute)
             let now = std::time::Instant::now();
@@ -298,6 +338,50 @@ impl App {
         Ok(())
     }
 
+    /// Handle login result from background task
+    async fn handle_login_result(&mut self, result: LoginResult) -> Result<()> {
+        match result {
+            LoginResult::Success {
+                session_index,
+                token,
+                instance,
+                session_name,
+            } => {
+                self.device_auth_info = None;
+                self.device_auth_info_arc = None;
+
+                // Update session in list
+                if let Some(session_mut) = self.sso_sessions.get_mut(session_index) {
+                    session_mut.is_active = true;
+                    session_mut.token = Some(token.clone());
+                    session_mut.token_expiration = Some(token.expires_at);
+                }
+
+                // Update current session
+                self.sso_instance = Some(instance);
+                self.sso_token = Some(token);
+                self.state = AppState::Main;
+                self.status_message = Some(format!("✓ Logged in to {}", session_name));
+
+                // Load accounts for this session
+                self.load_accounts().await?;
+            }
+            LoginResult::Error { message } => {
+                self.device_auth_info = None;
+                self.device_auth_info_arc = None;
+                self.state = AppState::Main;
+                self.status_message = Some(format!("Login failed: {}", message));
+            }
+            LoginResult::Cancelled => {
+                self.device_auth_info = None;
+                self.device_auth_info_arc = None;
+                self.state = AppState::Main;
+                self.status_message = Some("Login cancelled".to_string());
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_key(&mut self, key: KeyCode) -> Result<()> {
         match self.state {
             AppState::Main => self.handle_main_key(key).await?,
@@ -306,7 +390,19 @@ impl App {
                 self.state = AppState::Main;
             }
             AppState::Loading => {
-                // In loading state, most keys are ignored (except Ctrl+C handled separately)
+                // Allow cancelling login with q or Esc
+                match key {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        // Cancel the login attempt
+                        tracing::info!("User cancelled login");
+                        self.device_auth_info = None;
+                        self.device_auth_info_arc = None;
+                        self.state = AppState::Main;
+                        self.status_message = Some("Login cancelled".to_string());
+                        // Note: The background task will still complete, but we ignore its result
+                    }
+                    _ => {}
+                }
             }
             AppState::Error(_) => {
                 // Any key clears error and returns to main
@@ -580,57 +676,70 @@ impl App {
             self.state = AppState::Loading;
 
             let instance = session.instance.clone();
-            let instance_clone = instance.clone();
+            let session_name = session.session_name.clone();
+            let tx = self.login_tx.clone();
 
-            // Perform login with callback
-            match self
-                .auth_manager
-                .login_with_callback(&instance, false, |auth_info| {
-                    self.device_auth_info = Some(auth_info.clone());
+            // Clone device_auth_info Arc for sharing with background task
+            let device_auth_info = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let device_auth_info_clone = device_auth_info.clone();
 
-                    // Only try to open browser if not in headless environment
-                    if !crate::env::is_headless_environment() {
-                        let url_to_open = auth_info
-                            .verification_uri_complete
-                            .as_ref()
-                            .unwrap_or(&auth_info.verification_uri);
+            // Spawn background task for login
+            tokio::spawn(async move {
+                // Create new AuthManager for this task
+                let auth_manager = match AuthManager::new() {
+                    Ok(am) => am,
+                    Err(e) => {
+                        let _ = tx.send(LoginResult::Error {
+                            message: format!("Failed to create auth manager: {}", e),
+                        });
+                        return;
+                    }
+                };
 
-                        if let Err(e) = webbrowser::open(url_to_open) {
-                            tracing::warn!("Could not open browser automatically: {}", e);
+                // Perform login with callback
+                let result = auth_manager
+                    .login_with_callback(&instance, false, |auth_info| {
+                        // Store auth info for TUI to display
+                        if let Ok(mut guard) = device_auth_info_clone.lock() {
+                            *guard = Some(auth_info.clone());
                         }
-                    } else {
-                        tracing::info!("Headless environment detected - skipping browser launch, showing URL in TUI");
-                    }
 
-                    Ok(())
-                })
-                .await
-            {
-                Ok(token) => {
-                    self.device_auth_info = None;
+                        // Only try to open browser if not in headless environment
+                        if !crate::env::is_headless_environment() {
+                            let url_to_open = auth_info
+                                .verification_uri_complete
+                                .as_ref()
+                                .unwrap_or(&auth_info.verification_uri);
 
-                    // Update session in list
-                    if let Some(session_mut) = self.sso_sessions.get_mut(index) {
-                        session_mut.is_active = true;
-                        session_mut.token = Some(token.clone());
-                        session_mut.token_expiration = Some(token.expires_at);
-                    }
+                            if let Err(e) = webbrowser::open(url_to_open) {
+                                tracing::warn!("Could not open browser automatically: {}", e);
+                            }
+                        } else {
+                            tracing::info!("Headless environment detected - skipping browser launch, showing URL in TUI");
+                        }
 
-                    // Update current session
-                    self.sso_instance = Some(instance_clone);
-                    self.sso_token = Some(token);
-                    self.state = AppState::Main;
-                    self.status_message = Some(format!("✓ Logged in to {}", session.session_name));
+                        Ok(())
+                    })
+                    .await;
 
-                    // Load accounts for this session
-                    self.load_accounts().await?;
-                }
-                Err(e) => {
-                    self.device_auth_info = None;
-                    self.state = AppState::Main;
-                    self.status_message = Some(format!("Login failed: {}", e));
-                }
-            }
+                // Send result back to main thread
+                let message = match result {
+                    Ok(token) => LoginResult::Success {
+                        session_index: index,
+                        token,
+                        instance,
+                        session_name,
+                    },
+                    Err(e) => LoginResult::Error {
+                        message: format!("{}", e),
+                    },
+                };
+
+                let _ = tx.send(message);
+            });
+
+            // Store the device_auth_info Arc so we can poll it during rendering
+            self.device_auth_info_arc = Some(device_auth_info);
         }
         Ok(())
     }
@@ -1704,14 +1813,22 @@ impl App {
 
                 self.sso_sessions = sso_session_infos;
 
-                // Select first session if available
+                // Select first active session if available, otherwise select first session
                 if !self.sso_sessions.is_empty() && self.sessions_list_state.selected().is_none() {
-                    self.sessions_list_state.select(Some(0));
-                    // Set current session to first one if it's active
-                    if let Some(first_session) = self.sso_sessions.first() {
-                        if first_session.is_active {
-                            self.sso_instance = Some(first_session.instance.clone());
-                            self.sso_token = first_session.token.clone();
+                    // Find first active session
+                    let first_active_idx = self
+                        .sso_sessions
+                        .iter()
+                        .position(|session| session.is_active);
+
+                    let selected_idx = first_active_idx.unwrap_or(0);
+                    self.sessions_list_state.select(Some(selected_idx));
+
+                    // Set current session to the selected one if it's active
+                    if let Some(selected_session) = self.sso_sessions.get(selected_idx) {
+                        if selected_session.is_active {
+                            self.sso_instance = Some(selected_session.instance.clone());
+                            self.sso_token = selected_session.token.clone();
                         }
                     }
                 }
@@ -1999,6 +2116,7 @@ impl App {
     }
 
     fn ui(&mut self, f: &mut Frame) {
+        // Note: draw_loading_screen needs &mut self to poll device_auth_info from Arc
         match &self.state {
             AppState::Main => self.draw_main_screen(f),
             AppState::Help => self.draw_help_screen(f),
@@ -2054,13 +2172,6 @@ impl App {
             .map(|account_with_status| {
                 let account = &account_with_status.account_role;
 
-                // Status indicator
-                let status = if account_with_status.is_active {
-                    "🟢"
-                } else {
-                    "🔴"
-                };
-
                 // Default marker
                 let default_mark = if account_with_status.is_default {
                     "✓"
@@ -2068,8 +2179,8 @@ impl App {
                     ""
                 };
 
-                // Expiration status
-                let expiration_status = if account_with_status.is_active {
+                // Calculate expiration status and actual active state
+                let (is_actually_active, expiration_status) = if account_with_status.is_active {
                     if let Some(expiration) = account_with_status.expiration {
                         let now = chrono::Utc::now();
                         let remaining_secs = (expiration - now).num_seconds();
@@ -2078,20 +2189,24 @@ impl App {
                             let hours = remaining_secs / 3600;
                             let mins = (remaining_secs % 3600) / 60;
 
-                            if hours > 0 {
+                            let display = if hours > 0 {
                                 format!("{}h {}m", hours, mins)
                             } else {
                                 format!("{}m", mins)
-                            }
+                            };
+                            (true, display)
                         } else {
-                            "EXPIRED".to_string()
+                            (false, "EXPIRED".to_string())
                         }
                     } else {
-                        "".to_string()
+                        (true, "".to_string())
                     }
                 } else {
-                    "".to_string()
+                    (false, "".to_string())
                 };
+
+                // Status indicator based on actual expiration state
+                let status = if is_actually_active { "🟢" } else { "🔴" };
 
                 Row::new(vec![
                     Cell::new(Text::from(status).alignment(Alignment::Center)),
@@ -2216,11 +2331,8 @@ impl App {
             .sso_sessions
             .iter()
             .map(|session| {
-                // Status indicator
-                let status = if session.is_active { "🟢" } else { "🔴" };
-
-                // Expiration status
-                let expiration_status = if session.is_active {
+                // Calculate expiration status first
+                let (is_actually_active, expiration_status) = if session.is_active {
                     if let Some(expiration) = session.token_expiration {
                         let now = chrono::Utc::now();
                         let remaining_secs = (expiration - now).num_seconds();
@@ -2229,20 +2341,24 @@ impl App {
                             let hours = remaining_secs / 3600;
                             let mins = (remaining_secs % 3600) / 60;
 
-                            if hours > 0 {
+                            let display = if hours > 0 {
                                 format!("{}h {}m", hours, mins)
                             } else {
                                 format!("{}m", mins)
-                            }
+                            };
+                            (true, display)
                         } else {
-                            "EXPIRED".to_string()
+                            (false, "EXPIRED".to_string())
                         }
                     } else {
-                        "".to_string()
+                        (true, "".to_string())
                     }
                 } else {
-                    "".to_string()
+                    (false, "".to_string())
                 };
+
+                // Status indicator based on actual expiration state
+                let status = if is_actually_active { "🟢" } else { "🔴" };
 
                 Row::new(vec![
                     Cell::new(Text::from(status).alignment(Alignment::Center)),
@@ -2362,7 +2478,14 @@ impl App {
         f.render_widget(help, f.area());
     }
 
-    fn draw_loading_screen(&self, f: &mut Frame) {
+    fn draw_loading_screen(&mut self, f: &mut Frame) {
+        // Poll device_auth_info from Arc if available
+        if let Some(ref arc) = self.device_auth_info_arc {
+            if let Ok(guard) = arc.lock() {
+                self.device_auth_info = guard.clone();
+            }
+        }
+
         let mut loading_text = vec![];
 
         // Check if we're showing device auth info
@@ -2375,38 +2498,65 @@ impl App {
             )));
             loading_text.push(Line::from(""));
 
-            // Show different message for headless vs normal environments
-            let instruction_text = if crate::env::is_headless_environment() {
-                "Open this URL in a browser (on another machine if needed):"
-            } else {
-                "Browser opened automatically. If not, visit:"
-            };
+            // Use complete URL with code if available, otherwise show URL + code separately
+            if let Some(ref complete_url) = auth_info.verification_uri_complete {
+                // Show single URL with code embedded
+                let instruction_text = if crate::env::is_headless_environment() {
+                    "Copy and paste this URL (code is already included):"
+                } else {
+                    "Browser opened automatically. If not, copy this URL:"
+                };
 
-            loading_text.push(Line::from(Span::styled(
-                instruction_text,
-                Style::default().fg(Color::White),
-            )));
-            loading_text.push(Line::from(""));
-            loading_text.push(Line::from(Span::styled(
-                &auth_info.verification_uri,
-                Style::default().fg(Color::Green),
-            )));
-            loading_text.push(Line::from(""));
-            loading_text.push(Line::from(Span::styled(
-                "And enter code:",
-                Style::default().fg(Color::White),
-            )));
-            loading_text.push(Line::from(""));
-            loading_text.push(Line::from(Span::styled(
-                &auth_info.user_code,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )));
+                loading_text.push(Line::from(Span::styled(
+                    instruction_text,
+                    Style::default().fg(Color::White),
+                )));
+                loading_text.push(Line::from(""));
+                loading_text.push(Line::from(Span::styled(
+                    complete_url,
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                // Fallback: show URL and code separately
+                let instruction_text = if crate::env::is_headless_environment() {
+                    "Open this URL in a browser (on another machine if needed):"
+                } else {
+                    "Browser opened automatically. If not, visit:"
+                };
+
+                loading_text.push(Line::from(Span::styled(
+                    instruction_text,
+                    Style::default().fg(Color::White),
+                )));
+                loading_text.push(Line::from(""));
+                loading_text.push(Line::from(Span::styled(
+                    &auth_info.verification_uri,
+                    Style::default().fg(Color::Green),
+                )));
+                loading_text.push(Line::from(""));
+                loading_text.push(Line::from(Span::styled(
+                    "And enter code:",
+                    Style::default().fg(Color::White),
+                )));
+                loading_text.push(Line::from(""));
+                loading_text.push(Line::from(Span::styled(
+                    &auth_info.user_code,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
             loading_text.push(Line::from(""));
             loading_text.push(Line::from(Span::styled(
                 "Waiting for authorization...",
                 Style::default().fg(Color::Gray),
+            )));
+            loading_text.push(Line::from(""));
+            loading_text.push(Line::from(Span::styled(
+                "Press 'q' or 'Esc' to cancel",
+                Style::default().fg(Color::Yellow),
             )));
         } else {
             // Generic loading message

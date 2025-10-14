@@ -7,23 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.3] - 2025-10-14
+## [0.4.4] - 2025-10-14
+
+### Breaking Changes
+- **Removed top-level `login`, `logout`, and `status` commands** - Use `session` subcommands instead
+  - `awsom login` → `awsom session login`
+  - `awsom logout` → `awsom session logout`
+  - `awsom status` → `awsom session status`
+  - This change provides a cleaner, more consistent command structure
+  - All session-related operations are now under the `session` namespace
+
+### Added
+- **--headless flag** - Force headless mode even on systems with browsers
+  - Allows manual control of headless behavior
+  - Useful when browser opening is undesired on graphical systems
+  - Highest priority in headless detection (overrides auto-detection)
+  - Works in both TUI and CLI modes
+- **Cancel authentication** - Press 'q' or 'Esc' during login to cancel
+  - Loading screen shows "Press 'q' or 'Esc' to cancel" instruction
+  - TUI remains responsive during entire authentication process
+  - Cancelled logins return to main screen with clear status message
+- **Single-URL authentication** - One-click copy-paste for easier authentication
+  - Authentication popup now shows complete URL with code embedded
+  - No need to copy URL and code separately
+  - Example: `https://example.awsapps.com/start/#/device?user_code=ABCD-EFGH`
+  - Falls back to separate URL + code display if complete URL unavailable
 
 ### Fixed
-- **Critical: Fixed headless detection on macOS** - Browser now opens correctly on macOS
+- **Critical: Fixed TUI blocking during login** - TUI now remains responsive during SSO authentication
+  - Login operations now run in background tasks using async channels
+  - TUI event loop no longer blocks on `.await` during authentication
+  - Authentication popup (URL + code) now displays properly in headless environments
+  - Keyboard controls (q/Esc/Ctrl+C) work during login process
+  - Device authorization info shared via Arc<Mutex<>> between background task and UI
+- **Fixed headless detection on macOS** - Browser now opens correctly on macOS
   - macOS doesn't set `DISPLAY` variable (uses native windowing, not X11)
   - Previous version incorrectly detected macOS as headless environment
-  - This caused browser not to open and TUI to appear frozen
   - `DISPLAY` check now skipped on macOS using `#[cfg(not(target_os = "macos"))]`
   - Headless detection now properly works on macOS, Linux, Docker, and SSH
-- Fixed browser not opening on Mac when logging in via TUI
-- Fixed TUI appearing unresponsive when authentication was required
-- Improved headless detection priority order (SSH checks first, more reliable)
+- **Fixed real-time status indicators** - Status indicators now update in real-time when credentials expire
+  - Both Sessions and Accounts panes now calculate expiration on every render
+  - Status indicators (🟢/🔴) now instantly turn red when credentials expire
+  - No manual refresh needed to see expiration status changes
+  - Fixes inconsistency where green indicator showed with "EXPIRED" text
+- Improved headless detection priority order (--headless flag, SSH, CI, TERM, DISPLAY)
 - Added CI environment detection (`CI` variable)
 
 ### Changed
+- **TUI now defaults to Accounts pane when active session exists** - Improved startup UX
+  - First active SSO session is automatically selected on startup
+  - Accounts pane becomes active (instead of Sessions pane) when accounts are loaded
+  - First account is automatically selected for immediate interaction
+  - Only falls back to Sessions pane if no active sessions exist
+- Login operations spawn background tasks with result channels
+- Loading screen polls device authorization info from shared state
 - Headless detection now platform-aware (different checks for macOS vs Linux)
 - Improved debug logging for environment detection
+
+## [0.4.3] - 2025-10-14
+
+### Unreleased (skipped - contained incomplete fix)
 
 ## [0.4.2] - 2025-10-13
 

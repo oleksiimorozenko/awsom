@@ -23,6 +23,11 @@ async fn main() -> Result<()> {
     // Parse CLI arguments first to get verbose flag
     let args = cli::Cli::parse();
 
+    // Set headless mode override if --headless flag is set
+    if args.headless {
+        env::set_headless_override(true);
+    }
+
     // Initialize tracing based on verbose flag
     let log_level = if args.verbose {
         tracing::Level::DEBUG

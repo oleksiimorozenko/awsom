@@ -31,13 +31,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Interactive login to AWS SSO
-    Login {
-        /// Force re-authentication
-        #[arg(short, long)]
-        force: bool,
-    },
-
     /// List available accounts and roles
     List {
         /// SSO session name (auto-resolved if only one exists)
@@ -116,16 +109,6 @@ pub enum Commands {
         #[arg(long)]
         region: Option<String>,
     },
-
-    /// Check SSO session status
-    Status {
-        /// Output in JSON format for scripting
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Logout from AWS SSO
-    Logout,
 
     /// Manage SSO sessions
     Session {
@@ -286,9 +269,6 @@ pub enum Shell {
 
 pub async fn execute(args: Cli) -> Result<()> {
     match args.command {
-        Some(Commands::Login { force }) => {
-            commands::login::execute(args.start_url, args.region, force, args.headless).await
-        }
         Some(Commands::List {
             session_name,
             format,
@@ -347,8 +327,6 @@ pub async fn execute(args: Cli) -> Result<()> {
             )
             .await
         }
-        Some(Commands::Status { json }) => commands::status::execute(json).await,
-        Some(Commands::Logout) => commands::logout::execute(args.start_url, args.region).await,
         Some(Commands::Session { command }) => {
             commands::session::execute(command, args.headless).await
         }

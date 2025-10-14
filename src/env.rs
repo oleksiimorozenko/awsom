@@ -1,8 +1,19 @@
 // Environment detection utilities
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag to force headless mode (set by --headless CLI flag)
+static FORCE_HEADLESS: AtomicBool = AtomicBool::new(false);
+
+/// Set headless mode override (called from main with --headless flag)
+pub fn set_headless_override(headless: bool) {
+    FORCE_HEADLESS.store(headless, Ordering::Relaxed);
+}
+
 /// Check if we're running in a headless environment
 ///
 /// Headless mode is detected when:
+/// - --headless CLI flag is set (highest priority)
 /// - SSH_TTY or SSH_CONNECTION environment variables are set (SSH session)
 /// - TERM is set to "dumb" or is empty
 /// - On Linux: DISPLAY environment variable is not set (no X11)
@@ -12,7 +23,13 @@
 ///
 /// Returns true if running in headless mode
 pub fn is_headless_environment() -> bool {
-    // Check SSH session first (most reliable indicator)
+    // Check --headless flag first (highest priority)
+    if FORCE_HEADLESS.load(Ordering::Relaxed) {
+        tracing::debug!("Headless mode: forced by --headless flag");
+        return true;
+    }
+
+    // Check SSH session (most reliable auto-detection indicator)
     if std::env::var("SSH_TTY").is_ok() {
         tracing::debug!("Headless detected: SSH_TTY set");
         return true;

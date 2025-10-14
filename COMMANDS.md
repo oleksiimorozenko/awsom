@@ -74,7 +74,7 @@ awsom [GLOBAL OPTIONS]
 GLOBAL OPTIONS:
   --start-url <url>           SSO start URL (env: AWS_SSO_START_URL)
   --region <region>           SSO region (env: AWS_SSO_REGION)
-  --headless                  Headless mode - don't open browser
+  --headless                  Force headless mode - show URL in TUI instead of opening browser
   -v, --verbose               Enable debug logging
   -h, --help                  Print help
   -V, --version               Print version
@@ -149,20 +149,23 @@ awsom --headless session login
 
 In headless mode:
 - ✅ Browser opening is **skipped**
-- ✅ Verification URL and code displayed prominently
-- ✅ Instructions shown to copy-paste URL
-- ✅ TUI shows popup dialog with auth info (instead of trying to open browser)
+- ✅ Single URL with code embedded shown (one copy-paste instead of two)
+- ✅ Clear instructions for copy-pasting URL
+- ✅ TUI shows popup dialog with auth info (remains responsive)
+- ✅ Press 'q' or 'Esc' to cancel authentication at any time
 
 ### Example Output (Headless)
 
 ```
 === AWS SSO Login ===
-Running in headless mode - please open browser manually:
 
-Visit: https://seeking-alpha.awsapps.com/start/#/device
-Enter code: WMCQ-XCLX
+Copy and paste this URL (code is already included):
+
+https://seeking-alpha.awsapps.com/start/#/device?user_code=WMCQ-XCLX
 
 Waiting for authorization...
+
+Press 'q' or 'Esc' to cancel
 ```
 
 ## Common Usage Patterns

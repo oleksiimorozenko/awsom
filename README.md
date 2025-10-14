@@ -151,7 +151,7 @@ After setting up completions, you can use Tab to autocomplete commands, options,
 ### 1. Login to AWS SSO
 
 ```bash
-awsom login \
+awsom session login \
   --start-url https://your-org.awsapps.com/start \
   --region us-east-1
 ```
@@ -161,7 +161,7 @@ Or set environment variables:
 ```bash
 export AWS_SSO_START_URL=https://your-org.awsapps.com/start
 export AWS_SSO_REGION=us-east-1
-awsom login
+awsom session login
 ```
 
 ### 2. List Available Accounts and Roles
@@ -218,33 +218,12 @@ All commands support these global flags:
 - `-v, --verbose`: Enable debug logging to see detailed operation information
 - `--start-url <URL>`: SSO start URL (or set `AWS_SSO_START_URL`)
 - `--region <REGION>`: AWS region for SSO (or set `AWS_SSO_REGION`)
-- `--headless`: Headless mode - don't try to open browser (auto-detected in SSH/Docker)
-
-### `login` - Authenticate with AWS SSO
-
-```bash
-awsom login [--start-url URL] [--region REGION] [--force] [--verbose]
-```
-
-Options:
-- `--force`: Force re-authentication even if token is valid
-- `--verbose`: Show debug information during authentication
-
-Example with verbose output:
-```bash
-awsom -v login --start-url https://your-org.awsapps.com/start --region us-east-1
-```
+- `--headless`: Force headless mode - shows URL in TUI instead of opening browser (auto-detected in SSH/Docker)
 
 ### `list` - List accounts and roles
 
 ```bash
 awsom list [--format text|json]
-```
-
-### `logout` - End SSO session
-
-```bash
-awsom logout
 ```
 
 ### `exec` - Execute command with credentials
@@ -289,72 +268,6 @@ Options:
 - `--account-name <NAME>`: Account name (alternative to account-id)
 - `--role-name <ROLE>`: Role name
 - `--region <REGION>`: AWS region to open console in (defaults to profile default or SSO region)
-
-### `status` - Check SSO session status
-
-```bash
-# Human-readable output
-awsom status
-
-# JSON output for scripting
-awsom status --json
-```
-
-Check if your SSO session is active. Returns exit code 0 if active, 1 if not. Perfect for automation and shell scripts.
-
-**Output Examples:**
-
-Text format:
-```
-SSO session active (expires in 120 minutes)
-SSO session expired
-No SSO session found
-SSO not configured
-```
-
-JSON format:
-```json
-{"active":true,"expires_in_minutes":120}
-{"active":false,"reason":"expired"}
-{"active":false,"reason":"no_session"}
-{"active":false,"reason":"not_configured"}
-```
-
-**Shell Automation Example:**
-
-Add this to your `~/.zshrc` or `~/.bashrc` to automatically manage your SSO sessions and common profiles:
-
-```bash
-# awsom - Automatic SSO session and profile management
-awsom-auto() {
-    # Check if SSO session is active
-    if awsom status --json 2>/dev/null | grep -q '"active":true'; then
-        echo "✓ SSO session active"
-
-        # Export your commonly-used profiles in parallel
-        # Adjust these to your actual account names and roles
-        awsom export --account-name Production --role-name Developer --profile prod-dev &
-        awsom export --account-name Staging --role-name Developer --profile stage-dev &
-        awsom export --account-name Testing --role-name ReadOnly --profile test-ro &
-        wait
-
-        echo "✓ AWS profiles exported: prod-dev, stage-dev, test-ro"
-    else
-        echo "⚠ No active SSO session, logging in..."
-        awsom login
-
-        # After login, call this function again to export profiles
-        if [ $? -eq 0 ]; then
-            awsom-auto
-        fi
-    fi
-}
-
-# Optional: Run automatically on shell startup (comment out if too aggressive)
-# awsom-auto
-```
-
-Then just run `awsom-auto` in your terminal to ensure your SSO session and profiles are ready!
 
 ### `session` - Manage SSO sessions
 
@@ -477,7 +390,7 @@ awsom session add \
 awsom session list --format json | jq '.[] | .name'
 
 # Authenticate with production
-awsom login --start-url https://prod.awsapps.com/start --region us-east-1
+awsom session login --start-url https://prod.awsapps.com/start --region us-east-1
 
 # Export common profiles
 awsom export --account-name Production --role-name Developer --profile prod-dev
@@ -671,14 +584,14 @@ awsom/
 - Credential fetching from AWS SSO ✅ **Working**
 - AWS credentials file management (read/write/delete) ✅ **Working**
 - CLI interface with clap
-- `login` command ✅ **Working**
 - `list` command ✅ **Working**
-- `logout` command ✅ **Working**
 - `exec` command for running commands with credentials ✅ **Working**
 - `export` command for credential export ✅ **Working**
 - `console` command for opening AWS Console in browser ✅ **Working**
-- `status` command for session checking and automation ✅ **Working**
 - `session` command for managing SSO sessions via CLI ✅ **Working**
+  - `session login` for authentication
+  - `session logout` for ending sessions
+  - `session status` for session checking and automation
   - `session add` for creating sessions programmatically
   - `session list` with text/JSON output
   - `session delete` with force flag for automation
@@ -744,7 +657,7 @@ cargo build
 cargo build --release
 
 # Run
-cargo run -- login --start-url https://your-org.awsapps.com/start --region us-east-1
+cargo run -- session login --start-url https://your-org.awsapps.com/start --region us-east-1
 ```
 
 ## Testing
@@ -772,7 +685,7 @@ Apache-2.0
 If you encounter any issues, run commands with the `--verbose` flag to see detailed debug information:
 
 ```bash
-awsom --verbose login
+awsom --verbose session login
 awsom -v list
 ```
 
@@ -786,10 +699,10 @@ This will show:
 ### Common Issues
 
 **"No SSO session found"**
-- Run `awsom login` first to authenticate
+- Run `awsom session login` first to authenticate
 
 **"Token expired"**
-- Your SSO token has expired. Run `awsom login --force` to re-authenticate
+- Your SSO token has expired. Run `awsom session login --force` to re-authenticate
 
 **"Service error"**
 - Use `--verbose` to see the full error message
@@ -803,10 +716,10 @@ This will show:
 All core features are now implemented and working:
 - ✅ AWS SSO authentication with device flow
 - ✅ Full TUI interface with profile management
-- ✅ All CLI commands (`login`, `list`, `logout`, `exec`, `export`, `console`, `status`, `config`, `completions`)
+- ✅ All CLI commands (`session`, `list`, `exec`, `export`, `console`, `import`, `completions`)
 - ✅ AWS credentials file integration
 - ✅ Console federated sign-in
-- ✅ Session status checking for automation
+- ✅ Session status checking for automation (via `session status`)
 - ✅ Real-time expiration tracking
 - ✅ Profile management (create, rename, delete, set default)
 - ✅ Configuration file support
