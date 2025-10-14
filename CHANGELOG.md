@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2025-10-14
+
+### Fixed
+- **Critical: Fixed headless detection on macOS** - Browser now opens correctly on macOS
+  - macOS doesn't set `DISPLAY` variable (uses native windowing, not X11)
+  - Previous version incorrectly detected macOS as headless environment
+  - This caused browser not to open and TUI to appear frozen
+  - `DISPLAY` check now skipped on macOS using `#[cfg(not(target_os = "macos"))]`
+  - Headless detection now properly works on macOS, Linux, Docker, and SSH
+- Fixed browser not opening on Mac when logging in via TUI
+- Fixed TUI appearing unresponsive when authentication was required
+- Improved headless detection priority order (SSH checks first, more reliable)
+- Added CI environment detection (`CI` variable)
+
+### Changed
+- Headless detection now platform-aware (different checks for macOS vs Linux)
+- Improved debug logging for environment detection
+
 ## [0.4.2] - 2025-10-13
 
 ### Fixed
