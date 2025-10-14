@@ -588,14 +588,18 @@ impl App {
                 .login_with_callback(&instance, false, |auth_info| {
                     self.device_auth_info = Some(auth_info.clone());
 
-                    // Open browser
-                    let url_to_open = auth_info
-                        .verification_uri_complete
-                        .as_ref()
-                        .unwrap_or(&auth_info.verification_uri);
+                    // Only try to open browser if not in headless environment
+                    if !crate::env::is_headless_environment() {
+                        let url_to_open = auth_info
+                            .verification_uri_complete
+                            .as_ref()
+                            .unwrap_or(&auth_info.verification_uri);
 
-                    if let Err(e) = webbrowser::open(url_to_open) {
-                        tracing::warn!("Could not open browser automatically: {}", e);
+                        if let Err(e) = webbrowser::open(url_to_open) {
+                            tracing::warn!("Could not open browser automatically: {}", e);
+                        }
+                    } else {
+                        tracing::info!("Headless environment detected - skipping browser launch, showing URL in TUI");
                     }
 
                     Ok(())
@@ -1591,14 +1595,18 @@ impl App {
                 // Store device auth info for display in loading screen
                 self.device_auth_info = Some(auth_info.clone());
 
-                // Open browser
-                let url_to_open = auth_info
-                    .verification_uri_complete
-                    .as_ref()
-                    .unwrap_or(&auth_info.verification_uri);
+                // Only try to open browser if not in headless environment
+                if !crate::env::is_headless_environment() {
+                    let url_to_open = auth_info
+                        .verification_uri_complete
+                        .as_ref()
+                        .unwrap_or(&auth_info.verification_uri);
 
-                if let Err(e) = webbrowser::open(url_to_open) {
-                    tracing::warn!("Could not open browser automatically: {}", e);
+                    if let Err(e) = webbrowser::open(url_to_open) {
+                        tracing::warn!("Could not open browser automatically: {}", e);
+                    }
+                } else {
+                    tracing::info!("Headless environment detected - skipping browser launch, showing URL in TUI");
                 }
 
                 Ok(())
@@ -2366,8 +2374,16 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )));
             loading_text.push(Line::from(""));
+
+            // Show different message for headless vs normal environments
+            let instruction_text = if crate::env::is_headless_environment() {
+                "Open this URL in a browser (on another machine if needed):"
+            } else {
+                "Browser opened automatically. If not, visit:"
+            };
+
             loading_text.push(Line::from(Span::styled(
-                "Browser opened automatically. If not, visit:",
+                instruction_text,
                 Style::default().fg(Color::White),
             )));
             loading_text.push(Line::from(""));

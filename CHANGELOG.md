@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2025-10-13
+
+### Fixed
+- TUI now properly detects headless environments (Docker, SSH) and skips browser launch
+- Login screen shows appropriate instructions for headless vs normal environments
+- Fixes "No valid browsers detected" error when running TUI in Docker/SSH sessions
+- Auth URL and code are now displayed in TUI popup for manual authentication in headless mode
+
 ## [0.4.1] - 2025-10-13
 
 ### Fixed
