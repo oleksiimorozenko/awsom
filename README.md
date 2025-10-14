@@ -210,12 +210,15 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 
 ## CLI Commands
 
+> 📖 **For complete command reference with session resolution logic and examples, see [COMMANDS.md](COMMANDS.md)**
+
 ### Global Options
 
 All commands support these global flags:
 - `-v, --verbose`: Enable debug logging to see detailed operation information
 - `--start-url <URL>`: SSO start URL (or set `AWS_SSO_START_URL`)
 - `--region <REGION>`: AWS region for SSO (or set `AWS_SSO_REGION`)
+- `--headless`: Headless mode - don't try to open browser (auto-detected in SSH/Docker)
 
 ### `login` - Authenticate with AWS SSO
 
