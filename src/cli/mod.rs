@@ -132,13 +132,24 @@ pub enum Commands {
 
     /// Generate shell completion scripts
     ///
-    /// INSTALLATION:
+    /// Generates shell completion scripts for awsom commands.
+    /// Use --show-install to see installation instructions for your shell.
+    ///
+    /// USAGE:
+    ///
+    /// Generate completion script:
+    ///   awsom completions bash
+    ///
+    /// Show installation instructions:
+    ///   awsom completions bash --show-install
+    ///
+    /// QUICK INSTALL:
     ///
     /// Bash:
-    ///   eval "$(awsom completions bash)"    # Add to ~/.bashrc
+    ///   eval "$(awsom completions bash)"
     ///
     /// Zsh:
-    ///   eval "$(awsom completions zsh)"     # Add to ~/.zshrc
+    ///   eval "$(awsom completions zsh)"
     ///
     /// Fish:
     ///   awsom completions fish > ~/.config/fish/completions/awsom.fish
@@ -149,9 +160,13 @@ pub enum Commands {
     /// Elvish:
     ///   eval (awsom completions elvish | slurp)
     Completions {
-        /// Shell type to generate completions for
+        /// Shell type to generate completions for (bash, zsh, fish, powershell, elvish)
         #[arg(value_enum)]
         shell: Shell,
+
+        /// Show installation instructions instead of generating completion script
+        #[arg(long)]
+        show_install: bool,
     },
 }
 
@@ -254,8 +269,11 @@ pub async fn execute(args: Cli) -> Result<()> {
             section_type,
             force,
         }) => commands::import::execute(name, section_type, force).await,
-        Some(Commands::Completions { shell }) => {
-            commands::completions::execute(shell);
+        Some(Commands::Completions {
+            shell,
+            show_install,
+        }) => {
+            commands::completions::execute(shell, show_install);
             Ok(())
         }
         None => {
