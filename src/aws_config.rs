@@ -429,6 +429,93 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
     Ok(sessions)
 }
 
+/// Resolve SSO session configuration from multiple sources
+///
+/// Priority order:
+/// 1. Explicit flags (--start-url + --region) - highest priority, for scripting
+/// 2. Session name (--session-name) - look up from config
+/// 3. Active SSO token (if only one exists) - check cache (TODO: implement)
+/// 4. Single configured session (if only one exists) - check config
+///
+/// Returns (start_url, region) tuple or error with helpful message
+pub fn resolve_sso_session(
+    session_name: Option<&str>,
+    start_url: Option<&str>,
+    region: Option<&str>,
+) -> Result<(String, String)> {
+    // Level 1: Explicit flags (both start_url and region must be provided)
+    if let (Some(url), Some(reg)) = (start_url, region) {
+        tracing::debug!(
+            "Resolved SSO session from explicit flags: start_url={}, region={}",
+            url,
+            reg
+        );
+        return Ok((url.to_string(), reg.to_string()));
+    }
+
+    // If only one flag is provided, that's an error
+    if start_url.is_some() || region.is_some() {
+        return Err(SsoError::ConfigError(
+            "Both --start-url and --region must be provided when using explicit flags".to_string(),
+        ));
+    }
+
+    // Level 2: Session name - look up from config
+    if let Some(name) = session_name {
+        let sessions = read_all_sso_sessions()?;
+        if let Some(session) = sessions.iter().find(|s| s.session_name == name) {
+            tracing::debug!(
+                "Resolved SSO session from session name '{}': start_url={}, region={}",
+                name,
+                session.sso_start_url,
+                session.sso_region
+            );
+            return Ok((session.sso_start_url.clone(), session.sso_region.clone()));
+        } else {
+            return Err(SsoError::ConfigError(format!(
+                "Session '{}' not found in ~/.aws/config",
+                name
+            )));
+        }
+    }
+
+    // Level 3: Active SSO token (if only one exists)
+    // TODO: Implement token cache checking
+    // This would check ~/.aws/sso/cache/ for active tokens and if exactly one is found,
+    // map it back to its session configuration
+    // For now, skip to level 4
+
+    // Level 4: Single configured session
+    let sessions = read_all_sso_sessions()?;
+    match sessions.len() {
+        0 => Err(SsoError::ConfigError(
+            "No SSO sessions configured. Add one with 'awsom session add' or provide --start-url and --region".to_string()
+        )),
+        1 => {
+            let session = &sessions[0];
+            tracing::debug!(
+                "Resolved SSO session from single configured session '{}': start_url={}, region={}",
+                session.session_name,
+                session.sso_start_url,
+                session.sso_region
+            );
+            Ok((session.sso_start_url.clone(), session.sso_region.clone()))
+        }
+        _ => {
+            let session_list = sessions
+                .iter()
+                .map(|s| format!("  - {} ({})", s.session_name, s.sso_start_url))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(SsoError::ConfigError(format!(
+                "Multiple SSO sessions configured. Specify one with --session-name:\n\n{}\n\nExample:\n  awsom exec --session-name {} --role-name <role> --account-name <account> -- <command>",
+                session_list,
+                sessions[0].session_name
+            )))
+        }
+    }
+}
+
 /// Default profile configuration
 #[derive(Debug, Clone)]
 pub struct DefaultConfig {

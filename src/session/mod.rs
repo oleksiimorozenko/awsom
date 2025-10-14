@@ -17,8 +17,13 @@ impl SessionManager {
         })
     }
 
-    pub async fn login(&self, instance: &SsoInstance, force: bool) -> Result<SsoToken> {
-        self.auth.login(instance, force).await
+    pub async fn login(
+        &self,
+        instance: &SsoInstance,
+        force: bool,
+        headless: bool,
+    ) -> Result<SsoToken> {
+        self.auth.login(instance, force, headless).await
     }
 
     pub async fn activate_session(

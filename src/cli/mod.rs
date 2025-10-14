@@ -23,6 +23,10 @@ pub struct Cli {
     /// Enable verbose/debug logging
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Headless mode - don't try to open browser (auto-detected in SSH/Docker)
+    #[arg(long, global = true)]
+    pub headless: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -36,6 +40,10 @@ pub enum Commands {
 
     /// List available accounts and roles
     List {
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -55,6 +63,10 @@ pub enum Commands {
         #[arg(long)]
         role_name: String,
 
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
         /// Command to execute
         command: Vec<String>,
     },
@@ -72,6 +84,10 @@ pub enum Commands {
         /// Role name
         #[arg(long)]
         role_name: String,
+
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
 
         /// Write to ~/.aws/credentials as this profile name (instead of exporting to env)
         #[arg(long)]
@@ -91,6 +107,10 @@ pub enum Commands {
         /// Role name
         #[arg(long)]
         role_name: String,
+
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
 
         /// AWS region to open console in (defaults to profile default or SSO region)
         #[arg(long)]
@@ -223,6 +243,35 @@ pub enum SessionCommands {
         /// Session name to switch to
         name: String,
     },
+
+    /// Authenticate with AWS SSO
+    Login {
+        /// Session name to authenticate (auto-resolved if only one session exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// Force re-authentication even if token is valid
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// End SSO session
+    Logout {
+        /// Session name to logout (auto-resolved if only one session exists)
+        #[arg(long)]
+        session_name: Option<String>,
+    },
+
+    /// Check SSO session status
+    Status {
+        /// Session name to check (auto-resolved if only one session exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// Output in JSON format for scripting
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -238,32 +287,71 @@ pub enum Shell {
 pub async fn execute(args: Cli) -> Result<()> {
     match args.command {
         Some(Commands::Login { force }) => {
-            commands::login::execute(args.start_url, args.region, force).await
+            commands::login::execute(args.start_url, args.region, force, args.headless).await
         }
-        Some(Commands::List { format }) => {
-            commands::list::execute(args.start_url, args.region, format).await
-        }
+        Some(Commands::List {
+            session_name,
+            format,
+        }) => commands::list::execute(session_name, args.start_url, args.region, format).await,
         Some(Commands::Exec {
             account_id,
             account_name,
             role_name,
+            session_name,
             command,
-        }) => commands::exec::execute(account_id, account_name, role_name, command).await,
+        }) => {
+            commands::exec::execute(
+                account_id,
+                account_name,
+                role_name,
+                session_name,
+                args.start_url,
+                args.region,
+                command,
+            )
+            .await
+        }
         Some(Commands::Export {
             account_id,
             account_name,
             role_name,
+            session_name,
             profile,
-        }) => commands::export::execute(account_id, account_name, role_name, profile).await,
+        }) => {
+            commands::export::execute(
+                account_id,
+                account_name,
+                role_name,
+                session_name,
+                args.start_url,
+                args.region,
+                profile,
+            )
+            .await
+        }
         Some(Commands::Console {
             account_id,
             account_name,
             role_name,
+            session_name,
             region,
-        }) => commands::console::execute(account_id, account_name, role_name, region).await,
+        }) => {
+            commands::console::execute(
+                account_id,
+                account_name,
+                role_name,
+                session_name,
+                args.start_url,
+                args.region,
+                region,
+            )
+            .await
+        }
         Some(Commands::Status { json }) => commands::status::execute(json).await,
         Some(Commands::Logout) => commands::logout::execute(args.start_url, args.region).await,
-        Some(Commands::Session { command }) => commands::session::execute(command).await,
+        Some(Commands::Session { command }) => {
+            commands::session::execute(command, args.headless).await
+        }
         Some(Commands::Import {
             name,
             section_type,

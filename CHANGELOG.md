@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-10-13
+
+### Added
+- **Multi-Session Auto-Resolution**:
+  - 4-level priority session resolution logic:
+    1. Explicit flags (`--start-url` + `--region`) - highest priority for scripting
+    2. Session name (`--session-name`) - explicit session selection
+    3. Active SSO token (if only one exists) - automatic detection
+    4. Single configured session (if only one exists) - automatic fallback
+  - Helpful error messages when multiple sessions exist with examples
+- **Session Parameters**:
+  - `--session-name` parameter added to: `exec`, `export`, `console`, `list` commands
+  - Automatic session resolution for single-session environments
+  - Clear error messages listing available sessions when resolution fails
+- **Headless Mode Support**:
+  - `--headless` global flag to disable browser opening
+  - Auto-detection of headless environments (SSH, Docker, no DISPLAY)
+  - Environment checks: `DISPLAY`, `SSH_TTY`, `SSH_CONNECTION`, `TERM`
+  - Headless-specific authentication display with clear manual instructions
+- **New Session Subcommands**:
+  - `awsom session login [--session-name <name>]` - Authenticate with auto-resolution
+  - `awsom session logout [--session-name <name>]` - Logout with auto-resolution
+  - `awsom session status [--session-name <name>] [--json]` - Check status with auto-resolution
+  - All session subcommands support `--session-name` parameter
+- **Improved Completions**:
+  - `--show-install` flag for showing installation instructions
+  - Copy-paste ready installation commands for all shells (bash, zsh, fish, powershell, elvish)
+  - Clean separation of script generation and installation help
+
+### Changed
+- Session login display now adapts to headless environments
+- Browser opening is skipped in headless mode
+- Authentication instructions formatted for easy copy-paste in headless mode
+- Completion generation improved with cleaner output and helpful hints
+
+### Deprecated
+These top-level commands will be removed in v0.5.0 (use session subcommands instead):
+- `awsom login` → use `awsom session login`
+- `awsom logout` → use `awsom session logout`
+- `awsom status` → use `awsom session status`
+
+### Documentation
+- Added [COMMANDS.md](COMMANDS.md) with complete command tree visualization
+- Documented session resolution logic with priority order and examples
+- Added headless mode documentation with auto-detection details
+- Documented migration path from deprecated commands
+- Added common usage patterns for different scenarios (single user, team, CI/CD, SSH)
+
 ## [0.3.0] - 2025-10-13
 
 ### Added

@@ -1,22 +1,29 @@
 use crate::auth::AuthManager;
+use crate::aws_config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
-use crate::sso_config;
 use std::process::Command;
 
 pub async fn execute(
     account_id: Option<String>,
     account_name: Option<String>,
     role_name: String,
+    session_name: Option<String>,
+    start_url: Option<String>,
+    region: Option<String>,
     command: Vec<String>,
 ) -> Result<()> {
     if command.is_empty() {
         return Err(SsoError::InvalidConfig("No command specified".to_string()));
     }
 
-    // Get SSO config from CLI args, env vars, or ~/.aws/config
-    let (start_url, region) = sso_config::get_sso_config(None, None)?;
+    // Resolve SSO session using the new 4-level priority logic
+    let (start_url, region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        start_url.as_deref(),
+        region.as_deref(),
+    )?;
 
     let instance = SsoInstance { start_url, region };
 

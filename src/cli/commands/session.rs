@@ -4,7 +4,7 @@ use crate::cli::SessionCommands;
 use crate::error::{Result, SsoError};
 use std::io::{self, Write};
 
-pub async fn execute(command: SessionCommands) -> Result<()> {
+pub async fn execute(command: SessionCommands, headless: bool) -> Result<()> {
     match command {
         SessionCommands::Add {
             name,
@@ -19,6 +19,12 @@ pub async fn execute(command: SessionCommands) -> Result<()> {
             region,
         } => edit_session(name, start_url, region).await,
         SessionCommands::Switch { name } => switch_session(name).await,
+        SessionCommands::Login {
+            session_name,
+            force,
+        } => session_login(session_name, force, headless).await,
+        SessionCommands::Logout { session_name } => session_logout(session_name).await,
+        SessionCommands::Status { session_name, json } => session_status(session_name, json).await,
     }
 }
 
@@ -211,4 +217,41 @@ async fn switch_session(name: String) -> Result<()> {
     println!("For now, use the TUI (just run 'awsom') to switch between sessions interactively.");
 
     Ok(())
+}
+
+async fn session_login(session_name: Option<String>, force: bool, headless: bool) -> Result<()> {
+    // Resolve session using the new resolution logic
+    let (start_url, region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        None, // No explicit start_url
+        None, // No explicit region
+    )?;
+
+    // Call the existing login command implementation
+    crate::cli::commands::login::execute(Some(start_url), Some(region), force, headless).await
+}
+
+async fn session_logout(session_name: Option<String>) -> Result<()> {
+    // Resolve session using the new resolution logic
+    let (start_url, region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        None, // No explicit start_url
+        None, // No explicit region
+    )?;
+
+    // Call the existing logout command implementation
+    crate::cli::commands::logout::execute(Some(start_url), Some(region)).await
+}
+
+async fn session_status(session_name: Option<String>, json: bool) -> Result<()> {
+    // Resolve session using the new resolution logic
+    let (_start_url, _region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        None, // No explicit start_url
+        None, // No explicit region
+    )?;
+
+    // Call the existing status command implementation
+    // Note: status command currently doesn't use session info, but we resolve it for consistency
+    crate::cli::commands::status::execute(json).await
 }

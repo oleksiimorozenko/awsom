@@ -1,17 +1,24 @@
 use crate::auth::AuthManager;
+use crate::aws_config;
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
-use crate::sso_config;
 
 pub async fn execute(
     account_id: Option<String>,
     account_name: Option<String>,
     role_name: String,
-    region: Option<String>,
+    session_name: Option<String>,
+    sso_start_url: Option<String>,
+    sso_region: Option<String>,
+    console_region: Option<String>,
 ) -> Result<()> {
-    // Get SSO config from CLI args, env vars, or ~/.aws/config
-    let (start_url, sso_region) = sso_config::get_sso_config(None, None)?;
+    // Resolve SSO session using the new 4-level priority logic
+    let (start_url, sso_region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        sso_start_url.as_deref(),
+        sso_region.as_deref(),
+    )?;
 
     let instance = SsoInstance {
         start_url,
@@ -61,17 +68,17 @@ pub async fn execute(
         .await?;
 
     // Determine which region to use for console (use SSO region as default)
-    let console_region = region.as_deref().or(Some(instance.region.as_str()));
+    let console_region_resolved = console_region.as_deref().or(Some(instance.region.as_str()));
 
     eprintln!("Opening AWS Console in browser...");
     eprintln!("  Account: {}", account_id);
     eprintln!("  Role: {}", role_name);
-    if let Some(r) = console_region {
+    if let Some(r) = console_region_resolved {
         eprintln!("  Region: {}", r);
     }
 
     // Open console in browser
-    crate::console::open_console(&creds, console_region)?;
+    crate::console::open_console(&creds, console_region_resolved)?;
 
     eprintln!("✓ Console opened successfully");
 

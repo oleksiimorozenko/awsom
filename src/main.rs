@@ -5,6 +5,7 @@ mod aws_config;
 mod cli;
 mod console;
 mod credentials;
+mod env;
 mod error;
 mod expiry;
 mod models;

@@ -194,7 +194,7 @@ impl OidcClient {
     }
 
     /// Perform complete device flow authentication
-    pub async fn perform_device_flow(&self, start_url: &str) -> Result<SsoToken> {
+    pub async fn perform_device_flow(&self, start_url: &str, headless: bool) -> Result<SsoToken> {
         // Step 1: Register client
         let (client_id, client_secret) = self.register_client().await?;
 
@@ -204,7 +204,7 @@ impl OidcClient {
             .await?;
 
         // Step 3: Display authorization info to user
-        self.display_authorization_prompt(&auth_info)?;
+        self.display_authorization_prompt(&auth_info, headless)?;
 
         // Step 4: Poll for token
         let poll_interval = auth_info
@@ -258,22 +258,37 @@ impl OidcClient {
     }
 
     /// Display authorization prompt to user and optionally open browser
-    fn display_authorization_prompt(&self, auth_info: &DeviceAuthorizationInfo) -> Result<()> {
+    fn display_authorization_prompt(
+        &self,
+        auth_info: &DeviceAuthorizationInfo,
+        headless: bool,
+    ) -> Result<()> {
         eprintln!("\n=== AWS SSO Login ===");
-        eprintln!("Opening browser to: {}", auth_info.verification_uri);
-        eprintln!("\nIf browser doesn't open automatically, visit:");
-        eprintln!("  {}", auth_info.verification_uri);
-        eprintln!("\nAnd enter code: {}\n", auth_info.user_code);
 
-        // Try to open browser with complete URL if available
-        let url_to_open = auth_info
-            .verification_uri_complete
-            .as_ref()
-            .unwrap_or(&auth_info.verification_uri);
+        if headless {
+            // Headless mode - don't try to open browser, show clear instructions
+            eprintln!("Running in headless mode - please open browser manually:");
+            eprintln!();
+            eprintln!("Visit: {}", auth_info.verification_uri);
+            eprintln!("Enter code: {}", auth_info.user_code);
+            eprintln!();
+        } else {
+            // Normal mode - try to open browser
+            eprintln!("Opening browser to: {}", auth_info.verification_uri);
+            eprintln!("\nIf browser doesn't open automatically, visit:");
+            eprintln!("  {}", auth_info.verification_uri);
+            eprintln!("\nAnd enter code: {}\n", auth_info.user_code);
 
-        if let Err(e) = webbrowser::open(url_to_open) {
-            eprintln!("Could not open browser automatically: {}", e);
-            eprintln!("Please open the URL manually.\n");
+            // Try to open browser with complete URL if available
+            let url_to_open = auth_info
+                .verification_uri_complete
+                .as_ref()
+                .unwrap_or(&auth_info.verification_uri);
+
+            if let Err(e) = webbrowser::open(url_to_open) {
+                eprintln!("Could not open browser automatically: {}", e);
+                eprintln!("Please open the URL manually.\n");
+            }
         }
 
         eprintln!("Waiting for authorization...");

@@ -36,7 +36,12 @@ impl AuthManager {
     }
 
     /// Start interactive SSO login flow
-    pub async fn login(&self, instance: &SsoInstance, force_refresh: bool) -> Result<SsoToken> {
+    pub async fn login(
+        &self,
+        instance: &SsoInstance,
+        force_refresh: bool,
+        headless: bool,
+    ) -> Result<SsoToken> {
         // Check cache first unless force_refresh
         if !force_refresh {
             if let Some(token) = self.get_cached_token(instance)? {
@@ -48,7 +53,9 @@ impl AuthManager {
 
         // Initiate OIDC device flow
         let oidc_client = OidcClient::new(&instance.region).await?;
-        let token = oidc_client.perform_device_flow(&instance.start_url).await?;
+        let token = oidc_client
+            .perform_device_flow(&instance.start_url, headless)
+            .await?;
 
         // Cache the token
         self.save_token(instance, token.clone())?;

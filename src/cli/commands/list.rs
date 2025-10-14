@@ -1,16 +1,21 @@
 use crate::auth::AuthManager;
+use crate::aws_config;
 use crate::credentials::CredentialFetcher;
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance};
-use crate::sso_config;
 
 pub async fn execute(
+    session_name: Option<String>,
     start_url: Option<String>,
     region: Option<String>,
     format: String,
 ) -> Result<()> {
-    // Get SSO config from CLI args, env vars, or ~/.aws/config
-    let (start_url, region) = sso_config::get_sso_config(start_url, region)?;
+    // Resolve SSO session using the new 4-level priority logic
+    let (start_url, region) = aws_config::resolve_sso_session(
+        session_name.as_deref(),
+        start_url.as_deref(),
+        region.as_deref(),
+    )?;
 
     let instance = SsoInstance {
         start_url: start_url.clone(),
