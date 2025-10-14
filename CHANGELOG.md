@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2025-10-13
+
+### Fixed
+- Completion hint messages no longer appear when eval'd in shell rc files (e.g., `.bashrc`, `.zshrc`)
+- Hint messages now only show when running interactively (stdout is a terminal)
+- Fixes issue where `eval "$(awsom completions bash)"` in `.bashrc` showed messages on every shell startup
+
 ## [0.4.0] - 2025-10-13
 
 ### Added

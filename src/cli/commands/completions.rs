@@ -1,7 +1,7 @@
 use crate::cli::{Cli, Shell};
 use clap::CommandFactory;
 use clap_complete::{generate, Shell as ClapShell};
-use std::io;
+use std::io::{self, IsTerminal};
 
 pub fn execute(shell: Shell, show_install: bool) {
     if show_install {
@@ -25,19 +25,22 @@ pub fn execute(shell: Shell, show_install: bool) {
     // Generate completions to stdout
     generate(clap_shell, &mut cmd, bin_name, &mut io::stdout());
 
-    // Add a helpful comment at the end
-    let shell_name = match shell {
-        Shell::Bash => "bash",
-        Shell::Zsh => "zsh",
-        Shell::Fish => "fish",
-        Shell::PowerShell => "powershell",
-        Shell::Elvish => "elvish",
-    };
+    // Only show hint when running interactively (not when being eval'd or piped)
+    // When stdout is captured (not a terminal), we're being piped/eval'd - don't show hints
+    if io::stdout().is_terminal() {
+        let shell_name = match shell {
+            Shell::Bash => "bash",
+            Shell::Zsh => "zsh",
+            Shell::Fish => "fish",
+            Shell::PowerShell => "powershell",
+            Shell::Elvish => "elvish",
+        };
 
-    eprintln!();
-    eprintln!("# Completion script generated successfully!");
-    eprintln!("# To see installation instructions, run:");
-    eprintln!("#   awsom completions {} --show-install", shell_name);
+        eprintln!();
+        eprintln!("# Completion script generated successfully!");
+        eprintln!("# To see installation instructions, run:");
+        eprintln!("#   awsom completions {} --show-install", shell_name);
+    }
 }
 
 fn print_installation_instructions(shell: &Shell) {
