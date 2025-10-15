@@ -31,89 +31,16 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// List available accounts and roles
-    List {
-        /// SSO session name (auto-resolved if only one exists)
-        #[arg(long)]
-        session_name: Option<String>,
-
-        /// Output format (text, json)
-        #[arg(short, long, default_value = "text")]
-        format: String,
-    },
-
-    /// Execute a command with AWS credentials
-    Exec {
-        /// Account ID
-        #[arg(long)]
-        account_id: Option<String>,
-
-        /// Account name (alternative to account-id)
-        #[arg(long)]
-        account_name: Option<String>,
-
-        /// Role name
-        #[arg(long)]
-        role_name: String,
-
-        /// SSO session name (auto-resolved if only one exists)
-        #[arg(long)]
-        session_name: Option<String>,
-
-        /// Command to execute
-        command: Vec<String>,
-    },
-
-    /// Export credentials as environment variables or AWS profile
-    Export {
-        /// Account ID
-        #[arg(long)]
-        account_id: Option<String>,
-
-        /// Account name (alternative to account-id)
-        #[arg(long)]
-        account_name: Option<String>,
-
-        /// Role name
-        #[arg(long)]
-        role_name: String,
-
-        /// SSO session name (auto-resolved if only one exists)
-        #[arg(long)]
-        session_name: Option<String>,
-
-        /// Write to ~/.aws/credentials as this profile name (instead of exporting to env)
-        #[arg(long)]
-        profile: Option<String>,
-    },
-
-    /// Open AWS Console in browser for a role
-    Console {
-        /// Account ID
-        #[arg(long)]
-        account_id: Option<String>,
-
-        /// Account name (alternative to account-id)
-        #[arg(long)]
-        account_name: Option<String>,
-
-        /// Role name
-        #[arg(long)]
-        role_name: String,
-
-        /// SSO session name (auto-resolved if only one exists)
-        #[arg(long)]
-        session_name: Option<String>,
-
-        /// AWS region to open console in (defaults to profile default or SSO region)
-        #[arg(long)]
-        region: Option<String>,
-    },
-
     /// Manage SSO sessions
     Session {
         #[command(subcommand)]
         command: SessionCommands,
+    },
+
+    /// Manage profiles and credentials
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommands,
     },
 
     /// Import profiles or SSO sessions from user-managed section to awsom management
@@ -257,6 +184,94 @@ pub enum SessionCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum ProfileCommands {
+    /// List available accounts and roles
+    List {
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Refresh credentials for an existing profile
+    Start {
+        /// Profile name to refresh
+        profile_name: String,
+    },
+
+    /// Execute a command with AWS credentials
+    Exec {
+        /// Account ID
+        #[arg(long)]
+        account_id: Option<String>,
+
+        /// Account name (alternative to account-id)
+        #[arg(long)]
+        account_name: Option<String>,
+
+        /// Role name
+        #[arg(long)]
+        role_name: String,
+
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// Command to execute
+        command: Vec<String>,
+    },
+
+    /// Export credentials as environment variables or AWS profile
+    Export {
+        /// Account ID
+        #[arg(long)]
+        account_id: Option<String>,
+
+        /// Account name (alternative to account-id)
+        #[arg(long)]
+        account_name: Option<String>,
+
+        /// Role name
+        #[arg(long)]
+        role_name: String,
+
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// Write to ~/.aws/credentials as this profile name (instead of exporting to env)
+        #[arg(long)]
+        profile: Option<String>,
+    },
+
+    /// Open AWS Console in browser for a role
+    Console {
+        /// Account ID
+        #[arg(long)]
+        account_id: Option<String>,
+
+        /// Account name (alternative to account-id)
+        #[arg(long)]
+        account_name: Option<String>,
+
+        /// Role name
+        #[arg(long)]
+        role_name: String,
+
+        /// SSO session name (auto-resolved if only one exists)
+        #[arg(long)]
+        session_name: Option<String>,
+
+        /// AWS region to open console in (defaults to profile default or SSO region)
+        #[arg(long)]
+        region: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 #[allow(clippy::enum_variant_names)]
 pub enum Shell {
@@ -269,66 +284,11 @@ pub enum Shell {
 
 pub async fn execute(args: Cli) -> Result<()> {
     match args.command {
-        Some(Commands::List {
-            session_name,
-            format,
-        }) => commands::list::execute(session_name, args.start_url, args.region, format).await,
-        Some(Commands::Exec {
-            account_id,
-            account_name,
-            role_name,
-            session_name,
-            command,
-        }) => {
-            commands::exec::execute(
-                account_id,
-                account_name,
-                role_name,
-                session_name,
-                args.start_url,
-                args.region,
-                command,
-            )
-            .await
-        }
-        Some(Commands::Export {
-            account_id,
-            account_name,
-            role_name,
-            session_name,
-            profile,
-        }) => {
-            commands::export::execute(
-                account_id,
-                account_name,
-                role_name,
-                session_name,
-                args.start_url,
-                args.region,
-                profile,
-            )
-            .await
-        }
-        Some(Commands::Console {
-            account_id,
-            account_name,
-            role_name,
-            session_name,
-            region,
-        }) => {
-            commands::console::execute(
-                account_id,
-                account_name,
-                role_name,
-                session_name,
-                args.start_url,
-                args.region,
-                region,
-            )
-            .await
-        }
         Some(Commands::Session { command }) => {
             commands::session::execute(command, args.headless).await
+        }
+        Some(Commands::Profile { command }) => {
+            commands::profile::execute(command, args.start_url, args.region).await
         }
         Some(Commands::Import {
             name,

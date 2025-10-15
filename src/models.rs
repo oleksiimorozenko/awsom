@@ -6,16 +6,42 @@ use serde::{Deserialize, Serialize};
 pub struct SsoInstance {
     pub start_url: String,
     pub region: String,
+    /// Session name (for AWS CLI v2 [sso-session] compatibility)
+    /// When present, token cache uses SHA1 of session_name instead of start_url
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
 }
 
-/// Cached SSO-OIDC token
+/// Cached SSO-OIDC token (AWS CLI v2 compatible format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SsoToken {
+    /// Access token (serialized as camelCase for AWS CLI v2 compatibility)
+    #[serde(rename = "accessToken", alias = "access_token")]
     pub access_token: String,
+
+    /// Expiration timestamp (serialized as camelCase for AWS CLI v2 compatibility)
+    #[serde(rename = "expiresAt", alias = "expires_at")]
     pub expires_at: DateTime<Utc>,
+
+    /// Refresh token (optional, serialized as camelCase for AWS CLI v2 compatibility)
+    #[serde(
+        rename = "refreshToken",
+        alias = "refresh_token",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub refresh_token: Option<String>,
+
+    /// Region (optional, required for compatibility)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+
+    /// Start URL (optional, for AWS CLI v2 compatibility)
+    #[serde(
+        rename = "startUrl",
+        alias = "start_url",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub start_url: Option<String>,
 }
 
 impl SsoToken {
@@ -177,10 +203,12 @@ mod tests {
         let instance1 = SsoInstance {
             start_url: "https://example.awsapps.com/start".to_string(),
             region: "us-east-1".to_string(),
+            session_name: None,
         };
         let instance2 = SsoInstance {
             start_url: "https://example.awsapps.com/start".to_string(),
             region: "us-east-1".to_string(),
+            session_name: None,
         };
         assert_eq!(instance1, instance2);
     }
@@ -192,6 +220,7 @@ mod tests {
             expires_at: Utc::now() - Duration::hours(1),
             refresh_token: None,
             region: None,
+            start_url: None,
         };
         assert!(expired_token.is_expired());
 
@@ -200,6 +229,7 @@ mod tests {
             expires_at: Utc::now() + Duration::hours(1),
             refresh_token: None,
             region: None,
+            start_url: None,
         };
         assert!(!valid_token.is_expired());
     }
@@ -211,6 +241,7 @@ mod tests {
             expires_at: Utc::now() + Duration::minutes(90),
             refresh_token: None,
             region: None,
+            start_url: None,
         };
         let display = token.expiration_display();
         assert!(display.contains("1h"));
@@ -220,6 +251,7 @@ mod tests {
             expires_at: Utc::now() - Duration::minutes(10),
             refresh_token: None,
             region: None,
+            start_url: None,
         };
         assert_eq!(expired.expiration_display(), "EXPIRED");
     }
@@ -260,6 +292,7 @@ mod tests {
         let instance = SsoInstance {
             start_url: "https://example.awsapps.com/start".to_string(),
             region: "us-east-1".to_string(),
+            session_name: None,
         };
         let role = AccountRole {
             account_id: "123456789012".to_string(),

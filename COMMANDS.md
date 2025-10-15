@@ -35,34 +35,30 @@ awsom [GLOBAL OPTIONS]
 │       [--session-name <name>]  Session to check (optional)
 │       [--json]                Output in JSON format
 │
-├── exec                      Execute command with AWS credentials
-│   --role-name <role>        Role name (required)
-│   --account-name <name>     Account name (required)
-│   [--session-name <name>]   SSO session to use
-│   [--start-url <url>]       SSO start URL (for scripting)
-│   [--region <region>]       AWS region (for scripting)
-│   -- <command>              Command to execute
-│
-├── export                    Export credentials as environment variables
-│   --role-name <role>        Role name (required)
-│   --account-name <name>     Account name (required)
-│   [--session-name <name>]   SSO session to use
-│   [--start-url <url>]       SSO start URL (for scripting)
-│   [--region <region>]       AWS region (for scripting)
-│   [--profile <name>]        Write to ~/.aws/credentials as profile
-│
-├── console                   Open AWS Console in browser
-│   --role-name <role>        Role name (required)
-│   --account-name <name>     Account name (required)
-│   [--session-name <name>]   SSO session to use
-│   [--start-url <url>]       SSO start URL (for scripting)
-│   [--region <region>]       AWS region (for scripting)
-│
-├── list                      List available accounts and roles
-│   [--session-name <name>]   SSO session to use
-│   [--start-url <url>]       SSO start URL (for scripting)
-│   [--region <region>]       AWS region (for scripting)
-│   [--format text|json]      Output format (default: text)
+├── profile                   Profile and credential management commands
+│   ├── list                  List available accounts and roles
+│   │   [--session-name <name>]   SSO session to use
+│   │   [--format text|json]      Output format (default: text)
+│   │
+│   ├── start <profile>       Refresh credentials for an existing profile
+│   │
+│   ├── exec                  Execute command with AWS credentials
+│   │   --role-name <role>        Role name (required)
+│   │   --account-name <name>     Account name (required)
+│   │   [--session-name <name>]   SSO session to use
+│   │   -- <command>              Command to execute
+│   │
+│   ├── export                Export credentials as environment variables
+│   │   --role-name <role>        Role name (required)
+│   │   --account-name <name>     Account name (required)
+│   │   [--session-name <name>]   SSO session to use
+│   │   [--profile <name>]        Write to ~/.aws/credentials as profile
+│   │
+│   └── console               Open AWS Console in browser
+│       --role-name <role>        Role name (required)
+│       --account-name <name>     Account name (required)
+│       [--session-name <name>]   SSO session to use
+│       [--region <region>]       AWS region to open console in
 │
 ├── import <name>             Import existing configs to awsom management
 │   [--section-type profile|sso-session]  Type to import (default: profile)
@@ -82,11 +78,11 @@ GLOBAL OPTIONS:
 
 ## Session Resolution Logic
 
-Commands that need SSO configuration (`exec`, `export`, `console`, `list`) resolve sessions in this priority order:
+Commands that need SSO configuration (`profile list`, `profile exec`, `profile export`, `profile console`) resolve sessions in this priority order:
 
 ### 1. Explicit Flags (Highest Priority)
 ```bash
-awsom exec --start-url https://... --region us-east-1 --role-name Admin --account-name Production -- aws s3 ls
+awsom profile exec --start-url https://... --region us-east-1 --role-name Admin --account-name Production -- aws s3 ls
 ```
 - Uses provided `--start-url` and `--region`
 - Good for scripting and CI/CD
@@ -94,14 +90,14 @@ awsom exec --start-url https://... --region us-east-1 --role-name Admin --accoun
 
 ### 2. Session Name
 ```bash
-awsom exec --session-name prod-sso --role-name Admin --account-name Production -- aws s3 ls
+awsom profile exec --session-name prod-sso --role-name Admin --account-name Production -- aws s3 ls
 ```
 - Looks up session from `~/.aws/config` by name
 - Error if session doesn't exist
 
 ### 3. Active SSO Token (If Only One Exists)
 ```bash
-awsom exec --role-name Admin --account-name Production -- aws s3 ls
+awsom profile exec --role-name Admin --account-name Production -- aws s3 ls
 ```
 - Checks `~/.aws/sso/cache/` for active tokens
 - If exactly one active token found, uses its associated session
@@ -109,7 +105,7 @@ awsom exec --role-name Admin --account-name Production -- aws s3 ls
 
 ### 4. Single Configured Session (If Only One Exists)
 ```bash
-awsom exec --role-name Admin --account-name Production -- aws s3 ls
+awsom profile exec --role-name Admin --account-name Production -- aws s3 ls
 ```
 - Checks `~/.aws/config` for `[sso-session]` entries
 - If exactly one session configured, uses it
@@ -124,7 +120,7 @@ Available sessions:
   - staging-sso (https://staging.awsapps.com/start)
 
 Example:
-  awsom exec --session-name prod-sso --role-name Admin ...
+  awsom profile exec --session-name prod-sso --role-name Admin ...
 ```
 
 ## Headless Mode
@@ -183,7 +179,10 @@ awsom session login
 awsom
 
 # Or use CLI to list accounts
-awsom list
+awsom profile list
+
+# Refresh credentials for an existing profile
+awsom profile start my-profile
 ```
 
 ### Multi-Session Environment
@@ -197,15 +196,15 @@ awsom session add --name staging --start-url https://staging.awsapps.com/start -
 awsom session login --session-name prod
 
 # Use specific session for commands
-awsom exec --session-name prod --role-name Admin --account-name Production -- aws s3 ls
-awsom console --session-name staging --role-name Developer --account-name Staging
+awsom profile exec --session-name prod --role-name Admin --account-name Production -- aws s3 ls
+awsom profile console --session-name staging --role-name Developer --account-name Staging
 ```
 
 ### Scripting (No Session Configuration)
 
 ```bash
 # Direct usage without session configuration
-awsom exec \
+awsom profile exec \
   --start-url https://my-org.awsapps.com/start \
   --region us-east-1 \
   --role-name Admin \
@@ -213,7 +212,7 @@ awsom exec \
   -- aws s3 ls
 
 # Export credentials
-awsom export \
+awsom profile export \
   --start-url https://my-org.awsapps.com/start \
   --region us-east-1 \
   --role-name Developer \
@@ -232,32 +231,6 @@ ssh user@server
 awsom session login  # Automatically runs in headless mode
 ```
 
-## Migration from v0.3.0
-
-### Deprecated Commands (Will be removed in v0.4.0)
-
-| Old Command | New Command | Status |
-|------------|-------------|--------|
-| `awsom login` | `awsom session login` | ⚠️ Deprecated |
-| `awsom logout` | `awsom session logout` | ⚠️ Deprecated |
-| `awsom status` | `awsom session status` | ⚠️ Deprecated |
-
-### What's Unchanged
-
-These commands still work exactly the same:
-- `awsom exec --start-url <url> --region <region> ...` (scripting)
-- `awsom export --start-url <url> --region <region> ...` (scripting)
-- `awsom list --format json` (listing)
-- `awsom` (TUI mode)
-- All session management commands (`session add`, `session list`, etc.)
-
-### New Features
-
-- `--session-name` parameter added to: `exec`, `export`, `console`, `list`
-- `--headless` global flag for SSH/Docker environments
-- Auto-detection of headless environments
-- Improved TUI auth dialog for headless systems
-
 ## Examples by Use Case
 
 ### Individual Developer
@@ -271,8 +244,8 @@ awsom session login
 awsom
 
 # Or CLI
-awsom list
-awsom export --role-name Developer --account-name MyAccount --profile my-dev
+awsom profile list
+awsom profile export --role-name Developer --account-name MyAccount --profile my-dev
 ```
 
 ### Team with Multiple Environments
@@ -287,8 +260,8 @@ awsom session add --name dev --start-url https://dev.awsapps.com/start --region 
 awsom session login --session-name prod
 
 # Quick access
-awsom exec --session-name prod --role-name Admin --account-name ProdAccount -- aws s3 ls
-awsom console --session-name staging --role-name Developer --account-name StagingAccount
+awsom profile exec --session-name prod --role-name Admin --account-name ProdAccount -- aws s3 ls
+awsom profile console --session-name staging --role-name Developer --account-name StagingAccount
 ```
 
 ### CI/CD Pipeline
@@ -297,7 +270,7 @@ awsom console --session-name staging --role-name Developer --account-name Stagin
 #!/bin/bash
 # No session configuration needed - use direct credentials
 
-awsom export \
+awsom profile export \
   --start-url "$SSO_START_URL" \
   --region "$SSO_REGION" \
   --role-name "$ROLE_NAME" \
@@ -325,7 +298,7 @@ awsom session login
 # Credentials are now available on the server
 
 # Use credentials
-awsom exec --role-name Admin --account-name Production -- aws s3 ls
+awsom profile exec --role-name Admin --account-name Production -- aws s3 ls
 ```
 
 ## Environment Variables

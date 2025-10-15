@@ -1,6 +1,6 @@
 [package]
 name = "awsom"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2021"
 authors = ["Oleksii Morozenko"]
 description = "k9s-like TUI for AWS SSO sessions"
@@ -57,7 +57,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webbrowser = "1.0"
 uuid = { version = "1.11", features = ["v4", "serde"] }
-sha2 = "0.10"
+sha1 = "0.10"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 urlencoding = "2.1"
 

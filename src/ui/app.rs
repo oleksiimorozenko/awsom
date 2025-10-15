@@ -51,6 +51,7 @@ struct AccountRoleWithStatus {
     is_active: bool,
     expiration: Option<chrono::DateTime<chrono::Utc>>,
     is_default: bool,
+    profile_name: Option<String>,
 }
 
 /// SSO Session with its status
@@ -111,8 +112,8 @@ pub struct App {
     device_auth_info_arc: Option<std::sync::Arc<std::sync::Mutex<Option<DeviceAuthorizationInfo>>>>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
-    /// Pending delete session (index, timestamp) for double-press confirmation
-    pending_delete_session: Option<(usize, std::time::Instant)>,
+    /// Pending confirmation action (for modal dialog)
+    pending_confirm_action: Option<ConfirmAction>,
     /// SSO configuration input buffers
     sso_start_url_input: String,
     sso_region_input: String,
@@ -155,6 +156,8 @@ enum AppState {
     DefaultsConfigInput { step: DefaultsConfigStep },
     /// New profile configuration input (with region and output)
     NewProfileConfigInput { step: NewProfileConfigStep },
+    /// Confirmation dialog
+    ConfirmationDialog { title: String, message: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +178,27 @@ enum NewProfileConfigStep {
     ProfileName,
     Region,
     Output,
+}
+
+/// Action to perform when user confirms in confirmation dialog
+#[derive(Debug, Clone)]
+enum ConfirmAction {
+    /// Make a profile the default profile
+    MakeProfileDefault {
+        from_profile: String,
+        account: AccountRole,
+    },
+    /// Rename/overwrite a profile
+    RenameProfile {
+        old_name: String,
+        new_name: String,
+        account: AccountRole,
+    },
+    /// Delete an SSO session
+    DeleteSession {
+        session_index: usize,
+        session_name: String,
+    },
 }
 
 impl App {
@@ -205,13 +229,13 @@ impl App {
             device_auth_info: None,
             device_auth_info_arc: None,
             last_ctrl_c_time: None,
-            pending_delete_session: None,
+            pending_confirm_action: None,
             sso_start_url_input: String::new(),
             sso_region_input: String::new(),
             sso_session_name_input: "default-sso".to_string(),
             sso_input_cursor: 0,
-            default_region_input: "us-east-1".to_string(),
-            default_output_input: "json".to_string(),
+            default_region_input: String::new(),
+            default_output_input: String::new(),
             default_input_cursor: 0,
             new_profile_name_input: String::new(),
             new_profile_region_input: String::new(),
@@ -365,6 +389,12 @@ impl App {
 
                 // Load accounts for this session
                 self.load_accounts().await?;
+
+                // Switch to Accounts pane for better UX
+                if !self.accounts.is_empty() {
+                    self.active_pane = ActivePane::Accounts;
+                    self.accounts_list_state.select(Some(0));
+                }
             }
             LoginResult::Error { message } => {
                 self.device_auth_info = None;
@@ -419,6 +449,9 @@ impl App {
             }
             AppState::NewProfileConfigInput { .. } => {
                 self.handle_new_profile_config_input_key(key).await?;
+            }
+            AppState::ConfirmationDialog { .. } => {
+                self.handle_confirmation_dialog_key(key).await?;
             }
         }
         Ok(())
@@ -503,8 +536,14 @@ impl App {
                 }
             }
             KeyCode::Char('e') => {
-                if self.active_pane == ActivePane::Sessions {
-                    self.edit_sso_session().await?;
+                match self.active_pane {
+                    ActivePane::Sessions => {
+                        self.edit_sso_session().await?;
+                    }
+                    ActivePane::Accounts => {
+                        // Edit profile (name, region, output)
+                        self.edit_profile().await?;
+                    }
                 }
             }
             KeyCode::Char('d') => {
@@ -516,12 +555,6 @@ impl App {
                         // Set as default profile
                         self.set_as_default().await?;
                     }
-                }
-            }
-            KeyCode::Char('p') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // Edit profile name
-                    self.edit_profile_name().await?;
                 }
             }
             KeyCode::Char('c') => {
@@ -812,58 +845,36 @@ impl App {
         Ok(())
     }
 
-    /// Delete the selected SSO session (requires confirmation via double-press)
+    /// Delete the selected SSO session (requires confirmation via modal dialog)
     async fn delete_sso_session(&mut self) -> Result<()> {
         if let Some(index) = self.sessions_list_state.selected() {
-            let now = std::time::Instant::now();
-
-            // Check if this is a confirmation press
-            if let Some((pending_index, last_press)) = self.pending_delete_session {
-                if pending_index == index && now.duration_since(last_press).as_secs() < 2 {
-                    // Double press confirmed - actually delete
-                    if let Some(session) = self.sso_sessions.get(index).cloned() {
-                        // First, logout if the session is active
-                        if session.is_active {
-                            self.logout_session(index).await?;
-                        }
-
-                        // Delete from ~/.aws/config file
-                        if let Err(e) = crate::aws_config::delete_sso_session(&session.session_name)
-                        {
-                            self.status_message =
-                                Some(format!("Error deleting session from config: {}", e));
-                            self.pending_delete_session = None;
-                            return Ok(());
-                        }
-
-                        // Remove from the sessions list
-                        self.sso_sessions.remove(index);
-
-                        // Update selection
-                        if self.sso_sessions.is_empty() {
-                            self.sessions_list_state.select(None);
-                        } else if index >= self.sso_sessions.len() {
-                            self.sessions_list_state
-                                .select(Some(self.sso_sessions.len() - 1));
-                        }
-
-                        self.status_message = Some(format!(
-                            "✓ Deleted session '{}' from ~/.aws/config",
-                            session.session_name
-                        ));
-                        self.pending_delete_session = None;
-                    }
-                    return Ok(());
-                }
-            }
-
-            // First press - ask for confirmation
             if let Some(session) = self.sso_sessions.get(index) {
-                self.pending_delete_session = Some((index, now));
-                self.status_message = Some(format!(
-                    "Press 'd' again within 2 seconds to confirm deletion of session '{}'",
-                    session.session_name
-                ));
+                let message = vec![
+                    format!(
+                        "Are you sure you want to delete SSO session '{}'?",
+                        session.session_name
+                    ),
+                    "".to_string(),
+                    format!("Start URL: {}", session.start_url),
+                    format!("Region: {}", session.region),
+                    "".to_string(),
+                    "This will remove the session from ~/.aws/config.".to_string(),
+                    if session.is_active {
+                        "The session will be logged out first.".to_string()
+                    } else {
+                        "".to_string()
+                    },
+                ];
+
+                // Show confirmation dialog
+                self.pending_confirm_action = Some(ConfirmAction::DeleteSession {
+                    session_index: index,
+                    session_name: session.session_name.clone(),
+                });
+                self.state = AppState::ConfirmationDialog {
+                    title: "Delete SSO Session".to_string(),
+                    message,
+                };
             }
         } else {
             self.status_message = Some("No session selected".to_string());
@@ -904,18 +915,30 @@ impl App {
                     }
                 } else {
                     // Role is inactive, start it (get credentials)
-                    // Check if there's an existing profile name for this role
-                    let existing_profile = crate::aws_config::get_existing_profile_name(&account)?;
+                    // Get current session name for unified profile lookup
+                    let session_name = if let Some(selected_session) = self.get_selected_session() {
+                        selected_session.session_name.clone()
+                    } else {
+                        self.status_message = Some("No SSO session selected".to_string());
+                        return Ok(());
+                    };
 
-                    if let Some(profile_name) = existing_profile {
-                        // Profile exists, just activate it
+                    // Check if there's an existing profile for this role using unified lookup
+                    let existing_profile = crate::aws_config::get_profile_by_role(
+                        &session_name,
+                        &account.account_id,
+                        &account.role_name,
+                    )?;
+
+                    if let Some(profile_info) = existing_profile {
+                        // Profile exists, just activate it (fetch credentials only)
                         self.state = AppState::Loading;
-                        self.save_profile_credentials(&account, &profile_name)
+                        self.save_profile_credentials(&account, &profile_info.name)
                             .await?;
                     } else {
                         // First time creating profile for this role
-                        // Check if [default] section exists
-                        match crate::aws_config::read_default_config()? {
+                        // Check if awsom defaults exist
+                        match crate::aws_config::read_awsom_defaults()? {
                             Some(defaults) => {
                                 // Defaults exist, show new profile config dialog
                                 let default_profile_name = format!(
@@ -943,13 +966,14 @@ impl App {
                                     Some("Configure profile for this role".to_string());
                             }
                             None => {
-                                // No defaults, show defaults config dialog first
+                                // No awsom defaults found, show defaults config dialog first
                                 self.pending_role = Some(account);
                                 self.state = AppState::DefaultsConfigInput {
                                     step: DefaultsConfigStep::Region,
                                 };
                                 self.status_message = Some(
-                                    "No [default] section found. Let's configure default settings first!".to_string()
+                                    "Let's configure default settings for new profiles!"
+                                        .to_string(),
                                 );
                             }
                         }
@@ -976,35 +1000,105 @@ impl App {
                         return Ok(());
                     }
 
-                    // Check if a default profile already exists
-                    let has_default = crate::aws_config::list_profile_statuses()?
-                        .iter()
-                        .any(|s| s.profile_name == "default");
+                    // Check if [default] profile exists and if it's user-managed
+                    match crate::aws_config::is_profile_in_awsom_section("default") {
+                        Ok(is_awsom_managed) => {
+                            if !is_awsom_managed {
+                                // Default profile exists and is user-created - show confirmation
+                                let mut message = vec![
+                                    "Profile [default] already exists (not managed by awsom)."
+                                        .to_string(),
+                                    "".to_string(),
+                                ];
 
-                    if has_default {
-                        // Delete the existing default profile first
-                        tracing::info!("Deleting existing default profile");
-                        if let Err(e) = crate::aws_config::delete_profile("default") {
-                            tracing::warn!("Failed to delete existing default profile: {}", e);
-                        }
-                    }
+                                // Get and display existing default profile details (compact format)
+                                if let Ok(Some(details)) =
+                                    crate::aws_config::get_profile_details("default")
+                                {
+                                    // Combine region and output on one line if both exist
+                                    let mut settings = Vec::new();
+                                    if let Some(region) = details.region {
+                                        settings.push(format!("region={}", region));
+                                    }
+                                    if let Some(output) = details.output {
+                                        settings.push(format!("output={}", output));
+                                    }
+                                    if !settings.is_empty() {
+                                        message.push(format!("Current: {}", settings.join(", ")));
+                                    }
 
-                    // Rename the profile to default
-                    match crate::aws_config::rename_profile(&existing_profile, "default") {
-                        Ok(()) => {
-                            self.status_message =
-                                Some(format!("✓ Set '{}' as default profile", existing_profile));
-                            // Reload accounts to update indicators
-                            if let Err(e) = self.load_accounts().await {
-                                tracing::warn!(
-                                    "Failed to reload accounts after setting default: {}",
-                                    e
+                                    // Show SSO details if present (compact)
+                                    if details.sso_session.is_some()
+                                        || details.sso_account_id.is_some()
+                                        || details.sso_role_name.is_some()
+                                    {
+                                        let mut sso_parts = Vec::new();
+                                        if let Some(session) = details.sso_session {
+                                            sso_parts.push(format!("session={}", session));
+                                        }
+                                        if let Some(account) = details.sso_account_id {
+                                            sso_parts.push(format!("account={}", account));
+                                        }
+                                        if let Some(role) = details.sso_role_name {
+                                            sso_parts.push(format!("role={}", role));
+                                        }
+                                        message.push(format!("SSO: {}", sso_parts.join(", ")));
+                                    }
+                                    message.push("".to_string());
+                                }
+
+                                message.push(format!("Replace with '{}'?", existing_profile));
+
+                                // Show confirmation dialog
+                                self.pending_confirm_action =
+                                    Some(ConfirmAction::MakeProfileDefault {
+                                        from_profile: existing_profile,
+                                        account,
+                                    });
+                                self.state = AppState::ConfirmationDialog {
+                                    title: "Replace [default] Profile".to_string(),
+                                    message,
+                                };
+                            } else {
+                                // Default profile is awsom-managed or doesn't exist - proceed directly
+                                tracing::info!(
+                                    "Deleting awsom-managed default profile before rename"
                                 );
+                                if let Err(e) = crate::aws_config::delete_profile("default") {
+                                    tracing::debug!(
+                                        "No existing default profile to delete (or error): {}",
+                                        e
+                                    );
+                                }
+
+                                // Rename the profile to default
+                                match crate::aws_config::rename_profile(
+                                    &existing_profile,
+                                    "default",
+                                ) {
+                                    Ok(()) => {
+                                        self.status_message = Some(format!(
+                                            "✓ Set '{}' as default profile",
+                                            existing_profile
+                                        ));
+                                        // Reload accounts to update indicators
+                                        if let Err(e) = self.load_accounts().await {
+                                            tracing::warn!(
+                                                "Failed to reload accounts after setting default: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.status_message =
+                                            Some(format!("Error setting default profile: {}", e));
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
                             self.status_message =
-                                Some(format!("Error setting default profile: {}", e));
+                                Some(format!("Error checking default profile: {}", e));
                         }
                     }
                 } else {
@@ -1015,31 +1109,73 @@ impl App {
         Ok(())
     }
 
-    /// Open profile name editor for selected role
-    async fn edit_profile_name(&mut self) -> Result<()> {
+    /// Open profile editor for selected role (name, region, output)
+    async fn edit_profile(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
             if let Some(account_with_status) = self.accounts.get(index).cloned() {
                 let account = account_with_status.account_role;
 
-                // Check if there's an existing profile name for this role
-                let existing_profile = crate::aws_config::get_existing_profile_name(&account)?;
-
-                let profile_name = if let Some(ref existing) = existing_profile {
-                    existing.clone()
+                // Get current session name for unified profile lookup
+                let session_name = if let Some(selected_session) = self.get_selected_session() {
+                    selected_session.session_name.clone()
                 } else {
-                    // Generate default profile name
-                    format!(
-                        "{}_{}",
-                        account.account_name.replace(" ", "-").to_lowercase(),
-                        account.role_name.replace(" ", "-").to_lowercase()
-                    )
+                    self.status_message = Some("No SSO session selected".to_string());
+                    return Ok(());
                 };
 
-                self.profile_input = profile_name.clone();
-                self.profile_input_cursor = profile_name.len();
+                // Look up existing profile using unified lookup
+                let existing_profile = crate::aws_config::get_profile_by_role(
+                    &session_name,
+                    &account.account_id,
+                    &account.role_name,
+                )?;
+
+                if let Some(profile_info) = existing_profile {
+                    // Edit existing profile - pre-fill with current values
+                    self.new_profile_name_input = profile_info.name.clone();
+                    self.new_profile_region_input = profile_info.region;
+                    self.new_profile_output_input = profile_info.output;
+                    self.new_profile_input_cursor = self.new_profile_name_input.len();
+                    self.existing_profile_name = Some(profile_info.name);
+                } else {
+                    // Create new profile - use defaults
+                    let default_profile_name = format!(
+                        "{}_{}",
+                        account
+                            .account_name
+                            .replace(" ", "-")
+                            .replace("_", "-")
+                            .to_lowercase(),
+                        account
+                            .role_name
+                            .replace(" ", "-")
+                            .replace("_", "-")
+                            .to_lowercase()
+                    );
+                    self.new_profile_name_input = default_profile_name;
+
+                    // Try to get defaults from awsom-defaults
+                    match crate::aws_config::read_awsom_defaults()? {
+                        Some(defaults) => {
+                            self.new_profile_region_input = defaults.region;
+                            self.new_profile_output_input = defaults.output;
+                        }
+                        None => {
+                            // Use hardcoded fallback if awsom-defaults doesn't exist
+                            self.new_profile_region_input = "us-east-1".to_string();
+                            self.new_profile_output_input = "json".to_string();
+                        }
+                    }
+
+                    self.new_profile_input_cursor = self.new_profile_name_input.len();
+                    self.existing_profile_name = None;
+                }
+
                 self.pending_role = Some(account);
-                self.existing_profile_name = existing_profile;
-                self.state = AppState::ProfileInput;
+                self.state = AppState::NewProfileConfigInput {
+                    step: NewProfileConfigStep::ProfileName,
+                };
+                self.status_message = Some("Edit profile configuration".to_string());
             }
         }
         Ok(())
@@ -1296,16 +1432,17 @@ impl App {
                         }
                     }
                     DefaultsConfigStep::Output => {
-                        // Save default configuration
+                        // Save default configuration to [profile awsom-defaults]
                         let config = crate::aws_config::DefaultConfig {
                             region: self.default_region_input.trim().to_string(),
                             output: self.default_output_input.trim().to_string(),
                         };
 
-                        match crate::aws_config::write_default_config(&config) {
+                        match crate::aws_config::write_awsom_defaults(&config) {
                             Ok(()) => {
                                 self.status_message = Some(
-                                    "✓ Default configuration saved to ~/.aws/config".to_string(),
+                                    "✓ Default settings saved to [profile awsom-defaults]"
+                                        .to_string(),
                                 );
 
                                 // Now proceed to new profile configuration
@@ -1334,8 +1471,8 @@ impl App {
                                 }
 
                                 // Clear input buffers
-                                self.default_region_input = "us-east-1".to_string();
-                                self.default_output_input = "json".to_string();
+                                self.default_region_input = String::new();
+                                self.default_output_input = String::new();
                                 self.default_input_cursor = 0;
                             }
                             Err(e) => {
@@ -1347,8 +1484,8 @@ impl App {
             }
             KeyCode::Esc => {
                 self.state = AppState::Main;
-                self.default_region_input = "us-east-1".to_string();
-                self.default_output_input = "json".to_string();
+                self.default_region_input = String::new();
+                self.default_output_input = String::new();
                 self.default_input_cursor = 0;
                 self.pending_role = None;
                 self.status_message = Some("Configuration cancelled".to_string());
@@ -1572,12 +1709,304 @@ impl App {
         Ok(())
     }
 
+    async fn handle_confirmation_dialog_key(&mut self, key: KeyCode) -> Result<()> {
+        match key {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // User confirmed - execute the pending action
+                if let Some(action) = self.pending_confirm_action.take() {
+                    match action {
+                        ConfirmAction::MakeProfileDefault {
+                            from_profile,
+                            account: _,
+                        } => {
+                            // Delete existing default profile
+                            tracing::info!("Deleting existing default profile");
+                            if let Err(e) = crate::aws_config::delete_profile("default") {
+                                tracing::debug!(
+                                    "No existing default profile to delete (or error): {}",
+                                    e
+                                );
+                            }
+
+                            // Rename the profile to default
+                            match crate::aws_config::rename_profile(&from_profile, "default") {
+                                Ok(()) => {
+                                    self.status_message = Some(format!(
+                                        "✓ Set '{}' as default profile",
+                                        from_profile
+                                    ));
+                                    // Reload accounts to update indicators
+                                    if let Err(e) = self.load_accounts().await {
+                                        tracing::warn!(
+                                            "Failed to reload accounts after setting default: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    self.status_message =
+                                        Some(format!("Error setting default profile: {}", e));
+                                }
+                            }
+                        }
+                        ConfirmAction::RenameProfile {
+                            old_name,
+                            new_name,
+                            account,
+                        } => {
+                            // Delete old profile if names differ
+                            if old_name != new_name {
+                                if let Err(e) = crate::aws_config::delete_profile(&old_name) {
+                                    tracing::warn!(
+                                        "Failed to delete old profile '{}': {}",
+                                        old_name,
+                                        e
+                                    );
+                                }
+                            }
+
+                            // Save the profile with new name and credentials
+                            self.state = AppState::Loading;
+                            self.save_profile_credentials(&account, &new_name).await?;
+                        }
+                        ConfirmAction::DeleteSession {
+                            session_index,
+                            session_name,
+                        } => {
+                            // Delete the session
+                            if let Some(session) = self.sso_sessions.get(session_index).cloned() {
+                                // Logout if active
+                                if session.is_active {
+                                    self.logout_session(session_index).await?;
+                                }
+
+                                // Delete from config
+                                if let Err(e) = crate::aws_config::delete_sso_session(&session_name)
+                                {
+                                    self.status_message =
+                                        Some(format!("Error deleting session: {}", e));
+                                    self.state = AppState::Main;
+                                    return Ok(());
+                                }
+
+                                // Remove from list
+                                self.sso_sessions.remove(session_index);
+
+                                // Update selection
+                                if self.sso_sessions.is_empty() {
+                                    self.sessions_list_state.select(None);
+                                } else if session_index >= self.sso_sessions.len() {
+                                    self.sessions_list_state
+                                        .select(Some(self.sso_sessions.len() - 1));
+                                }
+
+                                self.status_message =
+                                    Some(format!("✓ Deleted session '{}'", session_name));
+                            }
+                        }
+                    }
+                }
+                self.state = AppState::Main;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                // User cancelled - just return to main screen
+                self.pending_confirm_action = None;
+                self.state = AppState::Main;
+                self.status_message = Some("Action cancelled".to_string());
+            }
+            _ => {
+                // Ignore other keys
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_confirmation_dialog(&self, f: &mut Frame, title: String, message: Vec<String>) {
+        // Calculate dialog size with dynamic height
+        let dialog_width = 60;
+
+        // CRITICAL: Reserve space for essential elements
+        // - borders: 2 lines
+        // - title: 1 line
+        // - empty after title: 1 line
+        // - empty before buttons: 1 line
+        // - buttons (Y/N): 1 line
+        // MINIMUM dialog: 8 lines (6 fixed + at least 2 message lines)
+        let min_essential_height = 8u16;
+
+        // Get terminal dimensions
+        let area = f.area();
+
+        // Use most of the terminal height, leaving small margin
+        let max_height = area.height.saturating_sub(2);
+
+        // Calculate desired height
+        let content_height = message.len() as u16;
+        let desired_height = content_height + 6; // message + fixed elements
+
+        // Final dialog height (ensure minimum)
+        let dialog_height = std::cmp::max(
+            min_essential_height,
+            std::cmp::min(desired_height, max_height),
+        );
+
+        // Center the dialog
+        let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
+        let dialog_y = (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = ratatui::layout::Rect {
+            x: dialog_x,
+            y: dialog_y,
+            width: dialog_width,
+            height: dialog_height,
+        };
+
+        // Calculate available space for message content
+        // dialog_height - borders(2) - title(1) - empty(1) - empty(1) - buttons(1) = available
+        let available_message_lines = (dialog_height as usize).saturating_sub(6).max(1);
+
+        // Truncate message if needed - ALWAYS ensure Y/N buttons can be shown
+        let message_to_show = if message.len() > available_message_lines {
+            // Leave room for truncation indicator
+            let truncate_at = available_message_lines.saturating_sub(1).max(1);
+            let mut truncated = message[..truncate_at].to_vec();
+            truncated.push("...".to_string());
+            truncated
+        } else {
+            message
+        };
+
+        // Build dialog content
+        let mut dialog_text = vec![];
+        dialog_text.push(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(catppuccin_color(self.theme.colors.yellow))
+                .add_modifier(Modifier::BOLD),
+        )));
+        dialog_text.push(Line::from(""));
+
+        for msg in message_to_show {
+            dialog_text.push(Line::from(msg));
+        }
+
+        dialog_text.push(Line::from(""));
+        dialog_text.push(Line::from(vec![
+            Span::styled(
+                "Y",
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.green))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Confirm | "),
+            Span::styled(
+                "N",
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.red))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Cancel"),
+        ]));
+
+        let dialog = Paragraph::new(dialog_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
+                    .title("Confirmation"),
+            )
+            .wrap(ratatui::widgets::Wrap { trim: false });
+
+        // Clear the background by rendering a clear block first
+        let clear_block =
+            Block::default().style(Style::default().bg(catppuccin_color(self.theme.colors.base)));
+        f.render_widget(clear_block, dialog_area);
+
+        // Render the dialog
+        f.render_widget(dialog, dialog_area);
+    }
+
     async fn save_profile_credentials(
         &mut self,
         account: &AccountRole,
         profile_name: &str,
     ) -> Result<()> {
         if let (Some(ref token), Some(ref instance)) = (&self.sso_token, &self.sso_instance) {
+            // Check if target profile already exists (and is not the one being renamed)
+            let target_exists = match crate::aws_config::get_profile_details(profile_name) {
+                Ok(Some(_)) => {
+                    // Profile exists, check if it's different from the one being renamed
+                    match &self.existing_profile_name {
+                        Some(existing) => existing != profile_name,
+                        None => true, // No existing profile, so target is definitely different
+                    }
+                }
+                Ok(None) => false, // Target doesn't exist
+                Err(e) => {
+                    tracing::warn!("Error checking if profile exists: {}", e);
+                    false
+                }
+            };
+
+            // If target profile exists and is different, show confirmation
+            if target_exists {
+                let mut message = vec![
+                    format!("Profile '{}' already exists.", profile_name),
+                    "".to_string(),
+                ];
+
+                // Get and display existing profile details (compact format)
+                if let Ok(Some(details)) = crate::aws_config::get_profile_details(profile_name) {
+                    message.push("Current profile details:".to_string());
+
+                    // Combine region and output on one line if both exist
+                    let mut settings = Vec::new();
+                    if let Some(region) = details.region {
+                        settings.push(format!("region={}", region));
+                    }
+                    if let Some(output) = details.output {
+                        settings.push(format!("output={}", output));
+                    }
+                    if !settings.is_empty() {
+                        message.push(format!("  {}", settings.join(", ")));
+                    }
+
+                    // Show SSO details if present (compact)
+                    if details.sso_session.is_some()
+                        || details.sso_account_id.is_some()
+                        || details.sso_role_name.is_some()
+                    {
+                        let mut sso_parts = Vec::new();
+                        if let Some(session) = details.sso_session {
+                            sso_parts.push(format!("session={}", session));
+                        }
+                        if let Some(account_id) = details.sso_account_id {
+                            sso_parts.push(format!("account={}", account_id));
+                        }
+                        if let Some(role) = details.sso_role_name {
+                            sso_parts.push(format!("role={}", role));
+                        }
+                        message.push(format!("  SSO: {}", sso_parts.join(", ")));
+                    }
+                    message.push("".to_string());
+                }
+
+                message.push("Overwrite it?".to_string());
+
+                // Show confirmation dialog
+                let old_name = self.existing_profile_name.clone().unwrap_or_default();
+                self.pending_confirm_action = Some(ConfirmAction::RenameProfile {
+                    old_name,
+                    new_name: profile_name.to_string(),
+                    account: account.clone(),
+                });
+                self.state = AppState::ConfirmationDialog {
+                    title: "Overwrite Existing Profile".to_string(),
+                    message,
+                };
+                return Ok(());
+            }
+
             self.status_message = Some(format!(
                 "Getting credentials for {} / {}...",
                 account.account_name, account.role_name
@@ -1694,6 +2123,7 @@ impl App {
         let instance = SsoInstance {
             start_url: start_url.to_string(),
             region: region.to_string(),
+            session_name: None,
         };
 
         // Perform login with callback to capture device auth info
@@ -1788,6 +2218,7 @@ impl App {
                     let instance = SsoInstance {
                         start_url: session.sso_start_url.clone(),
                         region: session.sso_region.clone(),
+                        session_name: Some(session.session_name.clone()),
                     };
 
                     // Try to load cached token for this session
@@ -1867,6 +2298,7 @@ impl App {
         let instance = SsoInstance {
             start_url: start_url.to_string(),
             region: region.to_string(),
+            session_name: None,
         };
 
         // Try to load cached token
@@ -1975,6 +2407,11 @@ impl App {
                         }
                     }
 
+                    // Get current session name for profile lookup
+                    let session_name = self
+                        .get_selected_session()
+                        .map(|selected_session| selected_session.session_name.clone());
+
                     // Wrap roles with status
                     let mut accounts_with_status: Vec<AccountRoleWithStatus> = all_roles
                         .into_iter()
@@ -1989,11 +2426,26 @@ impl App {
                                 .cloned()
                                 .unwrap_or((false, None, false));
 
+                            // Look up profile name using unified lookup
+                            let profile_name = if let Some(ref sess_name) = session_name {
+                                crate::aws_config::get_profile_by_role(
+                                    sess_name,
+                                    &account_role.account_id,
+                                    &account_role.role_name,
+                                )
+                                .ok()
+                                .flatten()
+                                .map(|p| p.name)
+                            } else {
+                                None
+                            };
+
                             AccountRoleWithStatus {
                                 account_role,
                                 is_active,
                                 expiration,
                                 is_default,
+                                profile_name,
                             }
                         })
                         .collect();
@@ -2130,6 +2582,9 @@ impl App {
             AppState::NewProfileConfigInput { step } => {
                 self.draw_new_profile_config_input_screen(f, step.clone())
             }
+            AppState::ConfirmationDialog { title, message } => {
+                self.draw_confirmation_dialog(f, title.clone(), message.clone())
+            }
         }
     }
 
@@ -2208,6 +2663,9 @@ impl App {
                 // Status indicator based on actual expiration state
                 let status = if is_actually_active { "🟢" } else { "🔴" };
 
+                // Profile name or "N/A"
+                let profile_display = account_with_status.profile_name.as_deref().unwrap_or("N/A");
+
                 Row::new(vec![
                     Cell::new(Text::from(status).alignment(Alignment::Center)),
                     Cell::new(Text::from(default_mark).alignment(Alignment::Center)),
@@ -2216,6 +2674,7 @@ impl App {
                     ),
                     Cell::new(Text::from(account.account_id.clone()).alignment(Alignment::Center)),
                     Cell::new(Text::from(account.role_name.clone()).alignment(Alignment::Center)),
+                    Cell::new(Text::from(profile_display).alignment(Alignment::Center)),
                     Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
                 ])
             })
@@ -2223,10 +2682,11 @@ impl App {
 
         let header = Row::new(vec![
             Cell::new(Text::from("Status").alignment(Alignment::Center)),
-            Cell::new(Text::from("Def").alignment(Alignment::Center)),
+            Cell::new(Text::from("Default").alignment(Alignment::Center)),
             Cell::new(Text::from("Account").alignment(Alignment::Center)),
             Cell::new(Text::from("Account ID").alignment(Alignment::Center)),
             Cell::new(Text::from("Role").alignment(Alignment::Center)),
+            Cell::new(Text::from("Profile").alignment(Alignment::Center)),
             Cell::new(Text::from("Expires").alignment(Alignment::Center)),
         ])
         .style(
@@ -2247,10 +2707,11 @@ impl App {
             rows,
             [
                 Constraint::Length(6),  // Status
-                Constraint::Length(3),  // Default
+                Constraint::Length(7),  // Default (was 3, now wider for "Default")
                 Constraint::Min(15),    // Account Name
                 Constraint::Length(12), // Account ID
                 Constraint::Min(15),    // Role Name
+                Constraint::Min(15),    // Profile Name
                 Constraint::Length(10), // Expiration
             ],
         )
@@ -2311,10 +2772,10 @@ impl App {
                 Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":delete | Accounts: "),
-                Span::styled("p", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":profile "),
+                Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":default "),
+                Span::raw(":make default "),
                 Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":console "),
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
@@ -2457,8 +2918,8 @@ impl App {
             Line::from(""),
             Line::from("Accounts Pane:"),
             Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
-            Line::from("  p           - Edit profile name for selected role"),
-            Line::from("  d           - Set selected role's profile as default"),
+            Line::from("  e           - Edit profile (name, region, output) for selected role"),
+            Line::from("  d           - Make selected role's profile the default"),
             Line::from("  c           - Open AWS Console in browser for selected role"),
             Line::from("  r           - Refresh account/role list"),
             Line::from(""),
@@ -2791,7 +3252,9 @@ impl App {
             Line::from(Span::styled(example, Style::default().fg(Color::Gray))),
             Line::from(""),
             Line::from("These settings will be saved to ~/.aws/config as:"),
-            Line::from("[default]"),
+            Line::from("[profile awsom-defaults]"),
+            Line::from("This allows awsom to provide defaults without interfering with"),
+            Line::from("your [default] profile."),
         ];
 
         let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));

@@ -6,5 +6,6 @@ pub mod import;
 pub mod list;
 pub mod login;
 pub mod logout;
+pub mod profile;
 pub mod session;
 pub mod status;

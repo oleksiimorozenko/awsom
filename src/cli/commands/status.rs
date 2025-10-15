@@ -17,7 +17,11 @@ pub async fn execute(json: bool) -> Result<()> {
     // Get SSO config from env vars or ~/.aws/config
     let (start_url, region) = sso_config::get_sso_config(None, None)?;
 
-    let instance = SsoInstance { start_url, region };
+    let instance = SsoInstance {
+        start_url,
+        region,
+        session_name: None,
+    };
 
     // Check for cached token
     let auth = AuthManager::new()?;

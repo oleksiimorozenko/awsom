@@ -1,6 +1,6 @@
 use crate::error::{Result, SsoError};
 use crate::models::{SsoInstance, SsoToken};
-use sha2::{Digest, Sha256};
+use sha1::{Digest, Sha1};
 use std::fs;
 use std::path::PathBuf;
 
@@ -26,10 +26,20 @@ impl TokenCache {
         Ok(Self { cache_dir })
     }
 
-    /// Generate cache key from start URL (compatible with AWS CLI v2)
+    /// Generate cache key (compatible with AWS CLI v2)
+    /// Uses SHA1 of session_name when available (modern [sso-session] format),
+    /// otherwise falls back to SHA1 of start_url (legacy SSO format)
     fn cache_key(&self, instance: &SsoInstance) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(instance.start_url.as_bytes());
+        let mut hasher = Sha1::new();
+
+        // Use session_name if available (AWS CLI v2 with [sso-session]),
+        // otherwise use start_url (legacy format)
+        let key_material = instance
+            .session_name
+            .as_deref()
+            .unwrap_or(&instance.start_url);
+
+        hasher.update(key_material.as_bytes());
         format!("{:x}", hasher.finalize())
     }
 

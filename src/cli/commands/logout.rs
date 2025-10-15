@@ -7,7 +7,11 @@ pub async fn execute(start_url: Option<String>, region: Option<String>) -> Resul
     // Get SSO config from CLI args, env vars, or ~/.aws/config
     let (start_url, region) = sso_config::get_sso_config(start_url, region)?;
 
-    let instance = SsoInstance { start_url, region };
+    let instance = SsoInstance {
+        start_url,
+        region,
+        session_name: None,
+    };
 
     let auth = AuthManager::new()?;
     auth.remove_token(&instance)?;

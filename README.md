@@ -168,10 +168,10 @@ awsom session login
 
 ```bash
 # Human-readable format
-awsom list
+awsom profile list
 
 # JSON format
-awsom list --format json
+awsom profile list --format json
 ```
 
 ### 3. Launch TUI
@@ -220,16 +220,28 @@ All commands support these global flags:
 - `--region <REGION>`: AWS region for SSO (or set `AWS_SSO_REGION`)
 - `--headless`: Force headless mode - shows URL in TUI instead of opening browser (auto-detected in SSH/Docker)
 
-### `list` - List accounts and roles
+### `profile` - Manage profiles and credentials
+
+Profile commands allow you to list accounts, refresh credentials, execute commands, export credentials, and open the AWS Console.
+
+#### `profile list` - List accounts and roles
 
 ```bash
-awsom list [--format text|json]
+awsom profile list [--format text|json]
 ```
 
-### `exec` - Execute command with credentials
+#### `profile start` - Refresh credentials for existing profile
 
 ```bash
-awsom exec --role-name Developer --account-name Production -- aws s3 ls
+awsom profile start my-profile
+```
+
+Refreshes temporary credentials for an existing profile. Useful for keeping long-running sessions active.
+
+#### `profile exec` - Execute command with credentials
+
+```bash
+awsom profile exec --role-name Developer --account-name Production -- aws s3 ls
 ```
 
 Options:
@@ -238,15 +250,15 @@ Options:
 - `--role-name <ROLE>`: Role name
 - Command follows `--`
 
-### `export` - Export credentials
+#### `profile export` - Export credentials
 
 ```bash
 # Export as environment variables
-awsom export --role-name Developer --account-name Production
-eval $(awsom export --role-name Developer --account-name Production)
+awsom profile export --role-name Developer --account-name Production
+eval $(awsom profile export --role-name Developer --account-name Production)
 
 # Or write to AWS credentials file
-awsom export --role-name Developer --account-name Production --profile my-profile
+awsom profile export --role-name Developer --account-name Production --profile my-profile
 ```
 
 Options:
@@ -255,10 +267,10 @@ Options:
 - `--role-name <ROLE>`: Role name
 - `--profile <NAME>`: Write to ~/.aws/credentials as this profile
 
-### `console` - Open AWS Console in browser
+#### `profile console` - Open AWS Console in browser
 
 ```bash
-awsom console --role-name Developer --account-name Production
+awsom profile console --role-name Developer --account-name Production
 ```
 
 Opens the AWS Console in your default browser using federated sign-in with temporary credentials.
@@ -393,7 +405,7 @@ awsom session list --format json | jq '.[] | .name'
 awsom session login --start-url https://prod.awsapps.com/start --region us-east-1
 
 # Export common profiles
-awsom export --account-name Production --role-name Developer --profile prod-dev
+awsom profile export --account-name Production --role-name Developer --profile prod-dev
 ```
 
 ### `import` - Import existing configurations to awsom management
@@ -584,10 +596,12 @@ awsom/
 - Credential fetching from AWS SSO ✅ **Working**
 - AWS credentials file management (read/write/delete) ✅ **Working**
 - CLI interface with clap
-- `list` command ✅ **Working**
-- `exec` command for running commands with credentials ✅ **Working**
-- `export` command for credential export ✅ **Working**
-- `console` command for opening AWS Console in browser ✅ **Working**
+- `profile` command for managing profiles and credentials ✅ **Working**
+  - `profile list` - List accounts and roles
+  - `profile start` - Refresh credentials for existing profile
+  - `profile exec` - Execute commands with credentials
+  - `profile export` - Export credentials
+  - `profile console` - Open AWS Console in browser
 - `session` command for managing SSO sessions via CLI ✅ **Working**
   - `session login` for authentication
   - `session logout` for ending sessions
@@ -686,7 +700,7 @@ If you encounter any issues, run commands with the `--verbose` flag to see detai
 
 ```bash
 awsom --verbose session login
-awsom -v list
+awsom -v profile list
 ```
 
 This will show:
@@ -716,7 +730,7 @@ This will show:
 All core features are now implemented and working:
 - ✅ AWS SSO authentication with device flow
 - ✅ Full TUI interface with profile management
-- ✅ All CLI commands (`session`, `list`, `exec`, `export`, `console`, `import`, `completions`)
+- ✅ All CLI commands (`session`, `profile`, `import`, `completions`)
 - ✅ AWS credentials file integration
 - ✅ Console federated sign-in
 - ✅ Session status checking for automation (via `session status`)

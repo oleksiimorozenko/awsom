@@ -25,7 +25,11 @@ pub async fn execute(
         region.as_deref(),
     )?;
 
-    let instance = SsoInstance { start_url, region };
+    let instance = SsoInstance {
+        start_url,
+        region,
+        session_name: None,
+    };
 
     // Get SSO token
     let auth = AuthManager::new()?;

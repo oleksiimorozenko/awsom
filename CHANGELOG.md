@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-10-15
+
+### Breaking Changes
+- **Complete CLI restructuring** - Removed all top-level profile/credential commands
+  - `awsom list` → `awsom profile list`
+  - `awsom exec` → `awsom profile exec`
+  - `awsom export` → `awsom profile export`
+  - `awsom console` → `awsom profile console`
+  - **NO backward compatibility aliases** - Clean break for consistent command structure
+  - All session management under `session` subcommand, all profile/credential operations under `profile` subcommand
+  - This provides a clear, hierarchical command structure that scales better with future features
+
+### Added
+- **`profile` subcommand** - Unified namespace for all profile and credential operations
+  - `profile list` - List available accounts and roles
+  - `profile start <profile-name>` - **NEW**: Refresh credentials for an existing profile
+  - `profile exec` - Execute commands with AWS credentials
+  - `profile export` - Export credentials as environment variables or to ~/.aws/credentials
+  - `profile console` - Open AWS Console in browser
+- **Smart credential refresh** - `profile start` command for existing profiles
+  - Reads profile configuration from `~/.aws/config`
+  - Validates SSO profile requirements (sso_session, account_id, role_name)
+  - Automatically resolves SSO session and fetches fresh credentials
+  - Updates `~/.aws/credentials` with new temporary credentials
+  - Shows expiration time and helpful error messages
+  - Useful for long-running sessions and automation scripts
+
+### Changed
+- All profile/credential commands now require `profile` subcommand prefix
+- Command structure now mirrors conceptual model: `session` for authentication, `profile` for credentials
+- Help text and documentation updated throughout to reflect new structure
+
+### Documentation
+- Updated [COMMANDS.md](COMMANDS.md) with complete new command tree
+- Updated [README.md](README.md) with new command examples in Quick Start and CLI Commands sections
+- Removed migration section from COMMANDS.md (clean break, no compatibility mode)
+- All examples updated to use new `profile` subcommand syntax
+
 ## [0.4.4] - 2025-10-14
 
 ### Breaking Changes

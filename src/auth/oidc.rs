@@ -116,6 +116,7 @@ impl OidcClient {
         client_secret: &str,
         device_code: &str,
         poll_interval: u64,
+        start_url: &str,
     ) -> Result<SsoToken> {
         tracing::debug!("Polling for token with interval: {}s", poll_interval);
 
@@ -148,6 +149,7 @@ impl OidcClient {
                         expires_at,
                         refresh_token: response.refresh_token().map(|s| s.to_string()),
                         region: Some(self.region.clone()),
+                        start_url: Some(start_url.to_string()),
                     });
                 }
                 Err(err) => {
@@ -217,6 +219,7 @@ impl OidcClient {
             &client_secret,
             &auth_info.device_code,
             poll_interval,
+            start_url,
         )
         .await
     }
@@ -253,6 +256,7 @@ impl OidcClient {
             &client_secret,
             &auth_info.device_code,
             poll_interval,
+            start_url,
         )
         .await
     }

@@ -18,6 +18,7 @@ pub async fn execute(
     )?;
 
     let instance = SsoInstance {
+        session_name: None,
         start_url: start_url.clone(),
         region: region.clone(),
     };

@@ -1,6 +1,6 @@
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, RoleCredentials, SsoInstance};
-use sha2::{Digest, Sha256};
+use sha1::{Digest, Sha1};
 use std::fs;
 use std::path::PathBuf;
 
@@ -32,7 +32,7 @@ impl CredentialCache {
             "{}:{}:{}",
             instance.start_url, role.account_id, role.role_name
         );
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha1::new();
         hasher.update(key_str.as_bytes());
         format!("{:x}", hasher.finalize())
     }
