@@ -99,6 +99,10 @@ pub struct App {
     accounts: Vec<ProfileEntry>,
     /// Accounts table selection state
     accounts_list_state: TableState,
+    /// Cache of accounts/roles per SSO session (session_name -> accounts)
+    accounts_cache: std::collections::HashMap<String, Vec<AccountRole>>,
+    /// Current session filter (if Some, show only this session's accounts)
+    filtered_session: Option<String>,
     /// Authentication manager
     auth_manager: AuthManager,
     /// Credential manager
@@ -244,6 +248,8 @@ impl App {
             sessions_list_state: TableState::default(),
             accounts: Vec::new(),
             accounts_list_state: TableState::default(),
+            accounts_cache: std::collections::HashMap::new(),
+            filtered_session: None,
             auth_manager,
             credential_manager,
             sso_instance: None,
@@ -533,8 +539,16 @@ impl App {
                 ));
             }
             KeyCode::Char('r') => {
-                // Refresh account list
+                // Refresh account list (bypass cache)
                 if self.sso_token.is_some() {
+                    // Clear cache for current session to force fresh fetch
+                    if let Some(session_name) =
+                        self.get_selected_session().map(|s| s.session_name.clone())
+                    {
+                        if self.accounts_cache.remove(&session_name).is_some() {
+                            tracing::debug!("Cleared cache for session: {}", session_name);
+                        }
+                    }
                     self.load_accounts().await?;
                     // Reset auto-refresh timer after manual refresh
                     self.last_auto_refresh = Some(std::time::Instant::now());
@@ -605,6 +619,12 @@ impl App {
                 if self.active_pane == ActivePane::Accounts {
                     // Open AWS Console in browser
                     self.open_console().await?;
+                }
+            }
+            KeyCode::Char('f') => {
+                if self.active_pane == ActivePane::Sessions {
+                    // Toggle session filter
+                    self.toggle_session_filter().await?;
                 }
             }
             _ => {}
@@ -980,6 +1000,36 @@ impl App {
         Ok(())
     }
 
+    /// Toggle session filter: filter accounts by selected session
+    async fn toggle_session_filter(&mut self) -> Result<()> {
+        if let Some(index) = self.sessions_list_state.selected() {
+            if let Some(session) = self.sso_sessions.get(index) {
+                let session_name = session.session_name.clone();
+
+                // Toggle filter
+                if self.filtered_session == Some(session_name.clone()) {
+                    // Already filtered on this session - unfilter
+                    self.filtered_session = None;
+                    self.status_message =
+                        Some(format!("Filter removed for session '{}'", session_name));
+                } else {
+                    // Filter on this session
+                    self.filtered_session = Some(session_name.clone());
+                    self.status_message = Some(format!(
+                        "Filtering accounts by session '{}' (press 'f' again to unfilter)",
+                        session_name
+                    ));
+                }
+
+                // Reload accounts to apply filter
+                self.load_accounts().await?;
+            }
+        } else {
+            self.status_message = Some("No session selected".to_string());
+        }
+        Ok(())
+    }
+
     /// Toggle role session: if active, delete it; if inactive, create it
     async fn toggle_role_session(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
@@ -1039,6 +1089,9 @@ impl App {
 
                     if let Some(profile_info) = existing_profile {
                         // Profile exists, just activate it (fetch credentials only)
+                        // Set existing_profile_name so save_profile_credentials doesn't
+                        // incorrectly treat this as overwriting a different profile
+                        self.existing_profile_name = Some(profile_info.name.clone());
                         self.state = AppState::Loading;
                         self.save_profile_credentials(&account, &profile_info.name)
                             .await?;
@@ -2232,8 +2285,15 @@ impl App {
         )));
         dialog_text.push(Line::from(""));
 
+        // Truncate long lines to fit dialog width (minus padding and borders)
+        let max_line_width = (dialog_width as usize).saturating_sub(4);
         for msg in message_to_show {
-            dialog_text.push(Line::from(msg));
+            let truncated_msg = if msg.len() > max_line_width {
+                format!("{}...", &msg[..max_line_width.saturating_sub(3)])
+            } else {
+                msg
+            };
+            dialog_text.push(Line::from(truncated_msg));
         }
 
         dialog_text.push(Line::from(""));
@@ -2254,14 +2314,13 @@ impl App {
             Span::raw(": Cancel"),
         ]));
 
-        let dialog = Paragraph::new(dialog_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
-                    .title("Confirmation"),
-            )
-            .wrap(ratatui::widgets::Wrap { trim: false });
+        let dialog = Paragraph::new(dialog_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
+                .title("Confirmation"),
+        );
+        // Note: No .wrap() - lines are pre-truncated to fit, ensuring Y/N buttons always show
 
         // Clear the background by rendering a clear block first
         let clear_block =
@@ -2681,192 +2740,380 @@ impl App {
     }
 
     async fn load_accounts(&mut self) -> Result<()> {
+        // Determine which session's accounts to show
+        // Priority: filtered_session > currently selected session
+        let _target_session = if let Some(ref filtered) = self.filtered_session {
+            Some(filtered.clone())
+        } else {
+            self.get_selected_session()
+                .map(|selected_session| selected_session.session_name.clone())
+        };
+
+        // Check if we have an active SSO session with token
+        let _has_active_session = self.sso_token.is_some() && self.sso_instance.is_some();
+
+        // Get current session name (for caching when fetching from AWS)
+        let current_session_name = self
+            .get_selected_session()
+            .map(|selected_session| selected_session.session_name.clone());
+
         if let (Some(ref token), Some(ref instance)) = (&self.sso_token, &self.sso_instance) {
+            // We have an active SSO session
+
+            // If filtering is active but it's not the current session, use cache only
+            if let Some(ref filtered) = self.filtered_session {
+                if Some(filtered.clone()) != current_session_name {
+                    // Filtering a different session - use cache only
+                    if let Some(cached_roles) = self.accounts_cache.get(filtered) {
+                        tracing::debug!(
+                            "Showing cached accounts for filtered session: {}",
+                            filtered
+                        );
+                        // Build account list from cached roles (mark as inactive since not current session)
+                        let sso_profiles: Vec<ProfileEntry> = cached_roles
+                            .iter()
+                            .map(|account_role| {
+                                ProfileEntry::Sso(AccountRoleWithStatus {
+                                    account_role: account_role.clone(),
+                                    is_active: false,
+                                    expiration: None,
+                                    is_default: false,
+                                    profile_name: None,
+                                })
+                            })
+                            .collect();
+
+                        self.accounts = sso_profiles;
+                        self.state = AppState::Main;
+                        self.status_message = Some(format!(
+                            "Filtered: showing {} accounts from session '{}'",
+                            self.accounts.len(),
+                            filtered
+                        ));
+
+                        // Select first item if none selected
+                        if self.accounts_list_state.selected().is_none()
+                            && !self.accounts.is_empty()
+                        {
+                            self.accounts_list_state.select(Some(0));
+                        }
+                        return Ok(());
+                    } else {
+                        // No cache for filtered session - show empty with message
+                        tracing::debug!("No cached accounts for filtered session: {}", filtered);
+                        self.accounts = Vec::new();
+                        self.state = AppState::Main;
+                        self.status_message = Some(format!(
+                            "No cached data for session '{}'. Press 'f' again to unfilter.",
+                            filtered
+                        ));
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Either no filter, or filtering the current active session - fetch/cache normally
             self.state = AppState::Loading;
             self.status_message = Some("Loading accounts and roles...".to_string());
 
-            match self
-                .credential_manager
-                .list_accounts(&instance.region, &token.access_token)
-                .await
-            {
-                Ok(account_list) => {
-                    // Now fetch roles for each account
-                    let mut all_roles = Vec::new();
-                    for (account_id, account_name) in account_list {
-                        match self
-                            .credential_manager
-                            .list_account_roles(&instance.region, &token.access_token, &account_id)
-                            .await
-                        {
-                            Ok(roles) => {
-                                for role_name in roles {
-                                    all_roles.push(AccountRole {
-                                        account_id: account_id.clone(),
-                                        account_name: account_name.clone(),
-                                        role_name,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to list roles for account {}: {}",
-                                    account_id,
-                                    e
-                                );
-                            }
-                        }
-                    }
+            // Try to get from cache first
+            let mut all_roles = if let Some(ref sess_name) = current_session_name {
+                if let Some(cached_roles) = self.accounts_cache.get(sess_name) {
+                    // Use cached roles
+                    tracing::debug!("Using cached accounts for session: {}", sess_name);
+                    cached_roles.clone()
+                } else {
+                    // Fetch from AWS and cache
+                    Vec::new() // Will be populated below
+                }
+            } else {
+                Vec::new() // No session, will fetch fresh
+            };
 
-                    // Load credential statuses from AWS config
-                    let statuses = crate::aws_config::list_profile_statuses().unwrap_or_default();
-
-                    // Build a map from (account_id, role_name) to (is_active, expiration, is_default)
-                    #[allow(clippy::type_complexity)]
-                    let mut profile_map: HashMap<
-                        (String, String),
-                        (bool, Option<chrono::DateTime<chrono::Utc>>, bool),
-                    > = HashMap::new();
-
-                    // Collect static profiles separately
-                    let mut static_profiles: Vec<ProfileEntry> = Vec::new();
-
-                    for status in statuses {
-                        if status.has_credentials {
-                            match status.credential_type {
-                                crate::models::CredentialType::Sso => {
-                                    if let (Some(account_id), Some(role_name)) =
-                                        (status.account_id, status.role_name)
-                                    {
-                                        // Check if this is the default profile
-                                        let is_default = status.profile_name == "default";
-
-                                        // Check if credentials are expired
-                                        let is_active = if let Some(expiration) = status.expiration
-                                        {
-                                            chrono::Utc::now() < expiration
-                                        } else {
-                                            // No expiration info means credentials exist but we can't verify validity
-                                            true
-                                        };
-
-                                        // Match by account ID and role name from metadata
-                                        profile_map.insert(
-                                            (account_id, role_name),
-                                            (is_active, status.expiration, is_default),
-                                        );
-                                    }
-                                }
-                                crate::models::CredentialType::Static => {
-                                    // Add static profile entry
-                                    if let Some(creds) = status.static_credentials {
-                                        let is_default = status.profile_name == "default";
-                                        static_profiles.push(ProfileEntry::Static {
-                                            profile_name: status.profile_name,
-                                            is_default,
-                                            credentials: creds,
+            // Fetch from AWS if not in cache
+            if all_roles.is_empty() {
+                match self
+                    .credential_manager
+                    .list_accounts(&instance.region, &token.access_token)
+                    .await
+                {
+                    Ok(account_list) => {
+                        // Now fetch roles for each account
+                        for (account_id, account_name) in account_list {
+                            match self
+                                .credential_manager
+                                .list_account_roles(
+                                    &instance.region,
+                                    &token.access_token,
+                                    &account_id,
+                                )
+                                .await
+                            {
+                                Ok(roles) => {
+                                    for role_name in roles {
+                                        all_roles.push(AccountRole {
+                                            account_id: account_id.clone(),
+                                            account_name: account_name.clone(),
+                                            role_name,
                                         });
                                     }
                                 }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to list roles for account {}: {}",
+                                        account_id,
+                                        e
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    // Get current session name for profile lookup
-                    let session_name = self
-                        .get_selected_session()
-                        .map(|selected_session| selected_session.session_name.clone());
-
-                    // Wrap SSO roles with status
-                    let sso_profiles: Vec<ProfileEntry> = all_roles
-                        .into_iter()
-                        .map(|account_role| {
-                            // Match by account ID and role name
-                            let key = (
-                                account_role.account_id.clone(),
-                                account_role.role_name.clone(),
+                        // Cache the fetched roles for this session
+                        if let Some(ref sess_name) = current_session_name {
+                            tracing::debug!(
+                                "Caching {} accounts/roles for session: {}",
+                                all_roles.len(),
+                                sess_name
                             );
-                            let (is_active, expiration, is_default) = profile_map
-                                .get(&key)
-                                .cloned()
-                                .unwrap_or((false, None, false));
-
-                            // Look up profile name using unified lookup
-                            let profile_name = if let Some(ref sess_name) = session_name {
-                                crate::aws_config::get_profile_by_role(
-                                    sess_name,
-                                    &account_role.account_id,
-                                    &account_role.role_name,
-                                )
-                                .ok()
-                                .flatten()
-                                .map(|p| p.name)
-                            } else {
-                                None
-                            };
-
-                            ProfileEntry::Sso(AccountRoleWithStatus {
-                                account_role,
-                                is_active,
-                                expiration,
-                                is_default,
-                                profile_name,
-                            })
-                        })
-                        .collect();
-
-                    // Combine SSO and static profiles
-                    let mut all_profiles: Vec<ProfileEntry> = sso_profiles;
-                    all_profiles.extend(static_profiles);
-
-                    // Sort: SSO profiles by account/role name, static profiles by profile name
-                    all_profiles.sort_by(|a, b| {
-                        match (a, b) {
-                            (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
-                                .account_role
-                                .account_name
-                                .cmp(&b_status.account_role.account_name)
-                                .then_with(|| {
-                                    a_status
-                                        .account_role
-                                        .role_name
-                                        .cmp(&b_status.account_role.role_name)
-                                }),
-                            (
-                                ProfileEntry::Static {
-                                    profile_name: a_name,
-                                    ..
-                                },
-                                ProfileEntry::Static {
-                                    profile_name: b_name,
-                                    ..
-                                },
-                            ) => a_name.cmp(b_name),
-                            // Sort SSO profiles before static profiles
-                            (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => {
-                                std::cmp::Ordering::Less
-                            }
-                            (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => {
-                                std::cmp::Ordering::Greater
-                            }
+                            self.accounts_cache
+                                .insert(sess_name.clone(), all_roles.clone());
                         }
-                    });
-
-                    self.accounts = all_profiles;
-                    self.state = AppState::Main;
-                    self.status_message = Some(format!(
-                        "Loaded {} account/role combinations",
-                        self.accounts.len()
-                    ));
-
-                    // Select first item if none selected
-                    if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
-                        self.accounts_list_state.select(Some(0));
+                    }
+                    Err(e) => {
+                        self.state = AppState::Error(format!("Failed to load accounts: {}", e));
+                        return Ok(());
                     }
                 }
-                Err(e) => {
-                    self.state = AppState::Error(format!("Failed to load accounts: {}", e));
+            }
+
+            // Load credential statuses from AWS config
+            let statuses = crate::aws_config::list_profile_statuses().unwrap_or_default();
+
+            // Build a map from (account_id, role_name) to (is_active, expiration, is_default)
+            #[allow(clippy::type_complexity)]
+            let mut profile_map: HashMap<
+                (String, String),
+                (bool, Option<chrono::DateTime<chrono::Utc>>, bool),
+            > = HashMap::new();
+
+            // Collect static profiles separately
+            let mut static_profiles: Vec<ProfileEntry> = Vec::new();
+
+            for status in statuses {
+                if status.has_credentials {
+                    match status.credential_type {
+                        crate::models::CredentialType::Sso => {
+                            if let (Some(account_id), Some(role_name)) =
+                                (status.account_id, status.role_name)
+                            {
+                                // Check if this is the default profile
+                                let is_default = status.profile_name == "default";
+
+                                // Check if credentials are expired
+                                let is_active = if let Some(expiration) = status.expiration {
+                                    chrono::Utc::now() < expiration
+                                } else {
+                                    // No expiration info means credentials exist but we can't verify validity
+                                    true
+                                };
+
+                                // Match by account ID and role name from metadata
+                                profile_map.insert(
+                                    (account_id, role_name),
+                                    (is_active, status.expiration, is_default),
+                                );
+                            }
+                        }
+                        crate::models::CredentialType::Static => {
+                            // Add static profile entry
+                            if let Some(creds) = status.static_credentials {
+                                let is_default = status.profile_name == "default";
+                                static_profiles.push(ProfileEntry::Static {
+                                    profile_name: status.profile_name,
+                                    is_default,
+                                    credentials: creds,
+                                });
+                            }
+                        }
+                    }
                 }
+            }
+
+            // Wrap SSO roles with status
+            let sso_profiles: Vec<ProfileEntry> = all_roles
+                .into_iter()
+                .map(|account_role| {
+                    // Match by account ID and role name
+                    let key = (
+                        account_role.account_id.clone(),
+                        account_role.role_name.clone(),
+                    );
+                    let (is_active, expiration, is_default) = profile_map
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or((false, None, false));
+
+                    // Look up profile name using unified lookup
+                    let profile_name = if let Some(ref sess_name) = current_session_name {
+                        crate::aws_config::get_profile_by_role(
+                            sess_name,
+                            &account_role.account_id,
+                            &account_role.role_name,
+                        )
+                        .ok()
+                        .flatten()
+                        .map(|p| p.name)
+                    } else {
+                        None
+                    };
+
+                    ProfileEntry::Sso(AccountRoleWithStatus {
+                        account_role,
+                        is_active,
+                        expiration,
+                        is_default,
+                        profile_name,
+                    })
+                })
+                .collect();
+
+            // Combine SSO and static profiles
+            let mut all_profiles: Vec<ProfileEntry> = sso_profiles;
+            all_profiles.extend(static_profiles);
+
+            // Sort: SSO profiles by account/role name, static profiles by profile name
+            all_profiles.sort_by(|a, b| {
+                match (a, b) {
+                    (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
+                        .account_role
+                        .account_name
+                        .cmp(&b_status.account_role.account_name)
+                        .then_with(|| {
+                            a_status
+                                .account_role
+                                .role_name
+                                .cmp(&b_status.account_role.role_name)
+                        }),
+                    (
+                        ProfileEntry::Static {
+                            profile_name: a_name,
+                            ..
+                        },
+                        ProfileEntry::Static {
+                            profile_name: b_name,
+                            ..
+                        },
+                    ) => a_name.cmp(b_name),
+                    // Sort SSO profiles before static profiles
+                    (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => std::cmp::Ordering::Less,
+                    (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => {
+                        std::cmp::Ordering::Greater
+                    }
+                }
+            });
+
+            self.accounts = all_profiles;
+            self.state = AppState::Main;
+            self.status_message = Some(format!(
+                "Loaded {} account/role combinations",
+                self.accounts.len()
+            ));
+
+            // Select first item if none selected
+            if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
+                self.accounts_list_state.select(Some(0));
+            }
+        } else {
+            // No active SSO session - show only static profiles (and optionally cached accounts)
+            tracing::debug!("No active SSO session - clearing SSO accounts");
+
+            // Load credential statuses to get static profiles
+            let statuses = crate::aws_config::list_profile_statuses().unwrap_or_default();
+
+            let mut all_profiles: Vec<ProfileEntry> = Vec::new();
+
+            // Add static profiles
+            for status in statuses {
+                if status.has_credentials
+                    && status.credential_type == crate::models::CredentialType::Static
+                {
+                    if let Some(creds) = status.static_credentials {
+                        let is_default = status.profile_name == "default";
+                        all_profiles.push(ProfileEntry::Static {
+                            profile_name: status.profile_name,
+                            is_default,
+                            credentials: creds,
+                        });
+                    }
+                }
+            }
+
+            // If there's a filtered session, show its cached accounts (marked as inactive)
+            if let Some(ref filtered_sess) = self.filtered_session {
+                if let Some(cached_roles) = self.accounts_cache.get(filtered_sess) {
+                    tracing::debug!(
+                        "Adding {} cached accounts from filtered session: {}",
+                        cached_roles.len(),
+                        filtered_sess
+                    );
+
+                    // Add cached SSO accounts marked as inactive
+                    for account_role in cached_roles {
+                        all_profiles.push(ProfileEntry::Sso(AccountRoleWithStatus {
+                            account_role: account_role.clone(),
+                            is_active: false,
+                            expiration: None,
+                            is_default: false,
+                            profile_name: None,
+                        }));
+                    }
+                }
+            }
+
+            // Sort profiles
+            all_profiles.sort_by(|a, b| match (a, b) {
+                (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
+                    .account_role
+                    .account_name
+                    .cmp(&b_status.account_role.account_name)
+                    .then_with(|| {
+                        a_status
+                            .account_role
+                            .role_name
+                            .cmp(&b_status.account_role.role_name)
+                    }),
+                (
+                    ProfileEntry::Static {
+                        profile_name: a_name,
+                        ..
+                    },
+                    ProfileEntry::Static {
+                        profile_name: b_name,
+                        ..
+                    },
+                ) => a_name.cmp(b_name),
+                // Sort SSO profiles before static profiles
+                (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => std::cmp::Ordering::Less,
+                (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => std::cmp::Ordering::Greater,
+            });
+
+            self.accounts = all_profiles;
+
+            if self.accounts.is_empty() {
+                self.status_message = Some(
+                    "No active session. Switch to Sessions pane (Tab) and press Enter to login."
+                        .to_string(),
+                );
+            } else {
+                self.status_message = Some(format!(
+                    "Showing {} profiles (no active SSO session)",
+                    self.accounts.len()
+                ));
+            }
+
+            // Select first item if none selected
+            if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
+                self.accounts_list_state.select(Some(0));
             }
         }
         Ok(())
@@ -3147,11 +3394,18 @@ impl App {
             Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
-        // Add asterisk to title if this pane is active
-        let accounts_title = if self.active_pane == ActivePane::Accounts {
-            "Accounts & Roles (*)"
+        // Add asterisk to title if this pane is active, and show filter status
+        let accounts_title = if let Some(ref filtered) = self.filtered_session {
+            // Show filter status in title
+            if self.active_pane == ActivePane::Accounts {
+                format!("Accounts & Roles (*) [Filtered: {}]", filtered)
+            } else {
+                format!("Accounts & Roles [Filtered: {}]", filtered)
+            }
+        } else if self.active_pane == ActivePane::Accounts {
+            "Accounts & Roles (*)".to_string()
         } else {
-            "Accounts & Roles"
+            "Accounts & Roles".to_string()
         };
 
         let table = Table::new(
@@ -3223,7 +3477,9 @@ impl App {
                 Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":delete | Accounts: "),
+                Span::raw(":delete "),
+                Span::styled("f", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":filter | Accounts: "),
                 Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
@@ -3275,11 +3531,17 @@ impl App {
                 // Status indicator based on actual expiration state
                 let status = if is_actually_active { "🟢" } else { "🔴" };
 
+                // Add filter marker if this session is filtered
+                let session_name_display =
+                    if self.filtered_session.as_ref() == Some(&session.session_name) {
+                        format!("{} [FILTERED]", session.session_name)
+                    } else {
+                        session.session_name.clone()
+                    };
+
                 Row::new(vec![
                     Cell::new(Text::from(status).alignment(Alignment::Center)),
-                    Cell::new(
-                        Text::from(session.session_name.clone()).alignment(Alignment::Center),
-                    ),
+                    Cell::new(Text::from(session_name_display).alignment(Alignment::Center)),
                     Cell::new(Text::from(session.start_url.clone()).alignment(Alignment::Center)),
                     Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
                 ])
