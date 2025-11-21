@@ -2703,6 +2703,13 @@ impl App {
             Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
+        // Add asterisk to title if this pane is active
+        let accounts_title = if self.active_pane == ActivePane::Accounts {
+            "Accounts & Roles (*)"
+        } else {
+            "Accounts & Roles"
+        };
+
         let table = Table::new(
             rows,
             [
@@ -2719,7 +2726,7 @@ impl App {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Accounts & Roles")
+                .title(accounts_title)
                 .border_style(accounts_block_style),
         )
         .row_highlight_style(
@@ -2852,6 +2859,13 @@ impl App {
             Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
+        // Add asterisk to title if this pane is active
+        let sessions_title = if self.active_pane == ActivePane::Sessions {
+            "SSO Sessions (*)"
+        } else {
+            "SSO Sessions"
+        };
+
         let table = Table::new(
             rows,
             [
@@ -2865,7 +2879,7 @@ impl App {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("SSO Sessions")
+                .title(sessions_title)
                 .border_style(sessions_block_style),
         )
         .row_highlight_style(

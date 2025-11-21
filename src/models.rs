@@ -105,7 +105,46 @@ impl AccountRole {
     }
 }
 
-/// AWS temporary credentials
+/// Credential type - SSO or Static
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CredentialType {
+    Sso,
+    Static,
+}
+
+/// Static AWS credentials (long-term access keys)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    /// Optional session token for temporary static credentials
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+}
+
+impl StaticCredentials {
+    /// Validate that credentials have required fields
+    pub fn validate(&self) -> Result<(), String> {
+        if self.access_key_id.trim().is_empty() {
+            return Err("Access Key ID cannot be empty".to_string());
+        }
+        if self.secret_access_key.trim().is_empty() {
+            return Err("Secret Access Key cannot be empty".to_string());
+        }
+        // Basic format validation for access key
+        if !self.access_key_id.starts_with("AKIA") && !self.access_key_id.starts_with("ASIA") {
+            return Err("Access Key ID should start with AKIA or ASIA".to_string());
+        }
+        Ok(())
+    }
+
+    /// Check if this includes a session token (temporary credentials)
+    pub fn is_temporary(&self) -> bool {
+        self.session_token.is_some()
+    }
+}
+
+/// AWS temporary credentials (from SSO role assumption)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleCredentials {
     pub access_key_id: String,
@@ -344,5 +383,57 @@ mod tests {
         };
         assert!(expiring_session.is_active());
         assert_eq!(expiring_session.status(), SessionStatus::Expiring);
+    }
+
+    #[test]
+    fn test_static_credentials_validation() {
+        // Valid credentials
+        let valid_creds = StaticCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+            session_token: None,
+        };
+        assert!(valid_creds.validate().is_ok());
+        assert!(!valid_creds.is_temporary());
+
+        // With session token (temporary)
+        let temp_creds = StaticCredentials {
+            access_key_id: "ASIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: Some("temp_token".to_string()),
+        };
+        assert!(temp_creds.validate().is_ok());
+        assert!(temp_creds.is_temporary());
+
+        // Invalid - empty access key
+        let empty_key = StaticCredentials {
+            access_key_id: "".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: None,
+        };
+        assert!(empty_key.validate().is_err());
+
+        // Invalid - empty secret
+        let empty_secret = StaticCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "".to_string(),
+            session_token: None,
+        };
+        assert!(empty_secret.validate().is_err());
+
+        // Invalid - wrong prefix
+        let wrong_prefix = StaticCredentials {
+            access_key_id: "INVALIDKEY".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: None,
+        };
+        assert!(wrong_prefix.validate().is_err());
+    }
+
+    #[test]
+    fn test_credential_type() {
+        assert_eq!(CredentialType::Sso, CredentialType::Sso);
+        assert_eq!(CredentialType::Static, CredentialType::Static);
+        assert_ne!(CredentialType::Sso, CredentialType::Static);
     }
 }
