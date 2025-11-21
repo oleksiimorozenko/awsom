@@ -1389,6 +1389,67 @@ fn profile_exists_in_user_section(profile_name: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Write static credentials to ~/.aws/credentials
+pub fn write_static_credentials(
+    profile_name: &str,
+    creds: &crate::models::StaticCredentials,
+) -> Result<()> {
+    // Validate credentials before writing
+    creds.validate().map_err(SsoError::ConfigError)?;
+
+    let creds_path = credentials_file_path()?;
+    let aws_dir = creds_path
+        .parent()
+        .ok_or_else(|| SsoError::ConfigError("Invalid credentials path".to_string()))?;
+
+    // Create ~/.aws directory if it doesn't exist
+    if !aws_dir.exists() {
+        fs::create_dir_all(aws_dir).map_err(|e| {
+            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
+        })?;
+    }
+
+    // Create backups on first write
+    create_backups_if_needed()?;
+
+    // Read existing credentials file
+    let existing_content = if creds_path.exists() {
+        fs::read_to_string(&creds_path)
+            .map_err(|e| SsoError::ConfigError(format!("Failed to read credentials file: {}", e)))?
+    } else {
+        String::new()
+    };
+
+    // Build metadata comment to mark as static credentials
+    let metadata = vec!["# Type: Static".to_string()];
+
+    // Build key-value pairs for static credentials
+    let mut kvs = vec![
+        ("aws_access_key_id", creds.access_key_id.as_str()),
+        ("aws_secret_access_key", creds.secret_access_key.as_str()),
+    ];
+
+    // Add session token if present (for temporary static credentials)
+    let session_token_str;
+    if let Some(ref token) = creds.session_token {
+        session_token_str = token.clone();
+        kvs.push(("aws_session_token", &session_token_str));
+    }
+
+    // Parse and update credentials
+    let new_content =
+        update_ini_section_with_comments(&existing_content, profile_name, &kvs, Some(&metadata));
+
+    // Sort credentials profiles alphabetically
+    let sorted_content = sort_credentials_profiles(&new_content);
+
+    // Write updated credentials
+    fs::write(&creds_path, sorted_content)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+
+    Ok(())
+}
+
 /// Type alias for profile parsing result
 type ProfilesParseResult = (
     Option<Vec<(String, String)>>,
@@ -1663,6 +1724,8 @@ pub struct ProfileStatus {
     pub role_name: Option<String>,
     pub has_credentials: bool,
     pub expiration: Option<DateTime<Utc>>,
+    pub credential_type: crate::models::CredentialType,
+    pub static_credentials: Option<crate::models::StaticCredentials>,
 }
 
 /// Profile configuration information
@@ -1947,6 +2010,8 @@ fn check_profile_match(
         role_name: None,
         has_credentials: true,
         expiration: None,
+        credential_type: crate::models::CredentialType::Sso, // Default to SSO for this function
+        static_credentials: None,
     }))
 }
 
@@ -2237,16 +2302,43 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             // Save previous profile
             if let Some(profile) = current_profile.take() {
-                let has_creds = profile_data.contains_key("aws_access_key_id")
+                // Check if this is SSO credentials (has session token) or static
+                let has_sso_creds = profile_data.contains_key("aws_access_key_id")
                     && profile_data.contains_key("aws_secret_access_key")
                     && profile_data.contains_key("aws_session_token");
+
+                let has_static_creds = profile_data.contains_key("aws_access_key_id")
+                    && profile_data.contains_key("aws_secret_access_key")
+                    && !profile_data.contains_key("aws_session_token");
+
+                let (has_credentials, credential_type, static_credentials) = if has_sso_creds {
+                    (true, crate::models::CredentialType::Sso, None)
+                } else if has_static_creds {
+                    let static_creds = crate::models::StaticCredentials {
+                        access_key_id: profile_data.get("aws_access_key_id").unwrap().clone(),
+                        secret_access_key: profile_data
+                            .get("aws_secret_access_key")
+                            .unwrap()
+                            .clone(),
+                        session_token: None,
+                    };
+                    (
+                        true,
+                        crate::models::CredentialType::Static,
+                        Some(static_creds),
+                    )
+                } else {
+                    (false, crate::models::CredentialType::Sso, None)
+                };
 
                 profiles.push(ProfileStatus {
                     profile_name: profile,
                     account_id: account_id.take(),
                     role_name: role_name.take(),
-                    has_credentials: has_creds,
+                    has_credentials,
                     expiration: expiration.take(),
+                    credential_type,
+                    static_credentials,
                 });
                 profile_data.clear();
             }
@@ -2286,16 +2378,39 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
 
     // Save last profile
     if let Some(profile) = current_profile {
-        let has_creds = profile_data.contains_key("aws_access_key_id")
+        let has_sso_creds = profile_data.contains_key("aws_access_key_id")
             && profile_data.contains_key("aws_secret_access_key")
             && profile_data.contains_key("aws_session_token");
+
+        let has_static_creds = profile_data.contains_key("aws_access_key_id")
+            && profile_data.contains_key("aws_secret_access_key")
+            && !profile_data.contains_key("aws_session_token");
+
+        let (has_credentials, credential_type, static_credentials) = if has_sso_creds {
+            (true, crate::models::CredentialType::Sso, None)
+        } else if has_static_creds {
+            let static_creds = crate::models::StaticCredentials {
+                access_key_id: profile_data.get("aws_access_key_id").unwrap().clone(),
+                secret_access_key: profile_data.get("aws_secret_access_key").unwrap().clone(),
+                session_token: None,
+            };
+            (
+                true,
+                crate::models::CredentialType::Static,
+                Some(static_creds),
+            )
+        } else {
+            (false, crate::models::CredentialType::Sso, None)
+        };
 
         profiles.push(ProfileStatus {
             profile_name: profile,
             account_id,
             role_name,
-            has_credentials: has_creds,
+            has_credentials,
             expiration,
+            credential_type,
+            static_credentials,
         });
     }
 

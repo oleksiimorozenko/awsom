@@ -54,6 +54,17 @@ struct AccountRoleWithStatus {
     profile_name: Option<String>,
 }
 
+/// Profile entry that can be either SSO or static credentials
+#[derive(Debug, Clone)]
+enum ProfileEntry {
+    Sso(AccountRoleWithStatus),
+    Static {
+        profile_name: String,
+        is_default: bool,
+        credentials: crate::models::StaticCredentials,
+    },
+}
+
 /// SSO Session with its status
 #[derive(Debug, Clone)]
 struct SsoSessionInfo {
@@ -84,8 +95,8 @@ pub struct App {
     sso_sessions: Vec<SsoSessionInfo>,
     /// SSO sessions table selection state
     sessions_list_state: TableState,
-    /// List of accounts and roles with their active status (filtered by selected session)
-    accounts: Vec<AccountRoleWithStatus>,
+    /// List of profiles (both SSO and static) with their active status
+    accounts: Vec<ProfileEntry>,
     /// Accounts table selection state
     accounts_list_state: TableState,
     /// Authentication manager
@@ -128,6 +139,12 @@ pub struct App {
     new_profile_region_input: String,
     new_profile_output_input: String,
     new_profile_input_cursor: usize,
+    /// Static credential input buffers
+    static_profile_name_input: String,
+    static_access_key_input: String,
+    static_secret_key_input: String,
+    static_session_token_input: String,
+    static_input_cursor: usize,
     /// Last automatic refresh time
     last_auto_refresh: Option<std::time::Instant>,
     /// Catppuccin theme flavor
@@ -156,8 +173,18 @@ enum AppState {
     DefaultsConfigInput { step: DefaultsConfigStep },
     /// New profile configuration input (with region and output)
     NewProfileConfigInput { step: NewProfileConfigStep },
+    /// Static credential input (for creating/editing static profiles)
+    StaticCredentialInput { step: StaticCredentialStep },
     /// Confirmation dialog
     ConfirmationDialog { title: String, message: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum StaticCredentialStep {
+    ProfileName,
+    AccessKeyId,
+    SecretAccessKey,
+    SessionToken, // Optional
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,6 +268,11 @@ impl App {
             new_profile_region_input: String::new(),
             new_profile_output_input: String::new(),
             new_profile_input_cursor: 0,
+            static_profile_name_input: String::new(),
+            static_access_key_input: String::new(),
+            static_secret_key_input: String::new(),
+            static_session_token_input: String::new(),
+            static_input_cursor: 0,
             last_auto_refresh: None,
             theme: catppuccin::PALETTE.mocha,
             login_rx,
@@ -450,6 +482,9 @@ impl App {
             AppState::NewProfileConfigInput { .. } => {
                 self.handle_new_profile_config_input_key(key).await?;
             }
+            AppState::StaticCredentialInput { .. } => {
+                self.handle_static_credential_input_key(key).await?;
+            }
             AppState::ConfirmationDialog { .. } => {
                 self.handle_confirmation_dialog_key(key).await?;
             }
@@ -530,11 +565,14 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('a') => {
-                if self.active_pane == ActivePane::Sessions {
+            KeyCode::Char('a') => match self.active_pane {
+                ActivePane::Sessions => {
                     self.add_sso_session().await?;
                 }
-            }
+                ActivePane::Accounts => {
+                    self.add_static_credential().await?;
+                }
+            },
             KeyCode::Char('e') => {
                 match self.active_pane {
                     ActivePane::Sessions => {
@@ -823,6 +861,23 @@ impl App {
         Ok(())
     }
 
+    /// Add a new static credential profile
+    async fn add_static_credential(&mut self) -> Result<()> {
+        // Clear input buffers for fresh start
+        self.static_profile_name_input.clear();
+        self.static_access_key_input.clear();
+        self.static_secret_key_input.clear();
+        self.static_session_token_input.clear();
+        self.static_input_cursor = 0;
+
+        // Show static credential input dialog
+        self.state = AppState::StaticCredentialInput {
+            step: StaticCredentialStep::ProfileName,
+        };
+        self.status_message = Some("Add new static credential profile".to_string());
+        Ok(())
+    }
+
     /// Edit the selected SSO session
     async fn edit_sso_session(&mut self) -> Result<()> {
         if let Some(index) = self.sessions_list_state.selected() {
@@ -885,7 +940,16 @@ impl App {
     /// Toggle role session: if active, delete it; if inactive, create it
     async fn toggle_role_session(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
-            if let Some(account_with_status) = self.accounts.get(index).cloned() {
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                // Only SSO profiles can be toggled (static credentials don't have sessions)
+                let account_with_status = match profile_entry {
+                    ProfileEntry::Sso(status) => status,
+                    ProfileEntry::Static { .. } => {
+                        self.status_message = Some("Static credentials cannot be toggled. Use 'e' to edit or 'd' to delete.".to_string());
+                        return Ok(());
+                    }
+                };
+
                 let account = account_with_status.account_role;
 
                 if account_with_status.is_active {
@@ -987,13 +1051,21 @@ impl App {
     /// Set the selected role's profile as the default profile
     async fn set_as_default(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
-            if let Some(account_with_status) = self.accounts.get(index).cloned() {
-                let account = account_with_status.account_role;
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                // Get the existing profile name and account (if SSO) based on entry type
+                let (existing_profile, account_opt) = match profile_entry {
+                    ProfileEntry::Sso(ref account_with_status) => {
+                        let account = &account_with_status.account_role;
+                        let prof = crate::aws_config::get_existing_profile_name(account)?;
+                        (prof, Some(account.clone()))
+                    }
+                    ProfileEntry::Static {
+                        ref profile_name, ..
+                    } => (Some(profile_name.clone()), None),
+                };
 
-                // Check if there's an existing profile for this role
-                if let Some(existing_profile) =
-                    crate::aws_config::get_existing_profile_name(&account)?
-                {
+                // Check if there's an existing profile
+                if let Some(existing_profile) = existing_profile {
                     // Don't rename if already default
                     if existing_profile == "default" {
                         self.status_message = Some("Profile is already set as default".to_string());
@@ -1050,6 +1122,12 @@ impl App {
                                 message.push(format!("Replace with '{}'?", existing_profile));
 
                                 // Show confirmation dialog
+                                // Note: account field is unused in the handler, so we use a dummy for static profiles
+                                let account = account_opt.unwrap_or(AccountRole {
+                                    account_id: String::new(),
+                                    account_name: String::new(),
+                                    role_name: String::new(),
+                                });
                                 self.pending_confirm_action =
                                     Some(ConfirmAction::MakeProfileDefault {
                                         from_profile: existing_profile,
@@ -1112,70 +1190,81 @@ impl App {
     /// Open profile editor for selected role (name, region, output)
     async fn edit_profile(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
-            if let Some(account_with_status) = self.accounts.get(index).cloned() {
-                let account = account_with_status.account_role;
-
-                // Get current session name for unified profile lookup
-                let session_name = if let Some(selected_session) = self.get_selected_session() {
-                    selected_session.session_name.clone()
-                } else {
-                    self.status_message = Some("No SSO session selected".to_string());
-                    return Ok(());
-                };
-
-                // Look up existing profile using unified lookup
-                let existing_profile = crate::aws_config::get_profile_by_role(
-                    &session_name,
-                    &account.account_id,
-                    &account.role_name,
-                )?;
-
-                if let Some(profile_info) = existing_profile {
-                    // Edit existing profile - pre-fill with current values
-                    self.new_profile_name_input = profile_info.name.clone();
-                    self.new_profile_region_input = profile_info.region;
-                    self.new_profile_output_input = profile_info.output;
-                    self.new_profile_input_cursor = self.new_profile_name_input.len();
-                    self.existing_profile_name = Some(profile_info.name);
-                } else {
-                    // Create new profile - use defaults
-                    let default_profile_name = format!(
-                        "{}_{}",
-                        account
-                            .account_name
-                            .replace(" ", "-")
-                            .replace("_", "-")
-                            .to_lowercase(),
-                        account
-                            .role_name
-                            .replace(" ", "-")
-                            .replace("_", "-")
-                            .to_lowercase()
-                    );
-                    self.new_profile_name_input = default_profile_name;
-
-                    // Try to get defaults from awsom-defaults
-                    match crate::aws_config::read_awsom_defaults()? {
-                        Some(defaults) => {
-                            self.new_profile_region_input = defaults.region;
-                            self.new_profile_output_input = defaults.output;
-                        }
-                        None => {
-                            // Use hardcoded fallback if awsom-defaults doesn't exist
-                            self.new_profile_region_input = "us-east-1".to_string();
-                            self.new_profile_output_input = "json".to_string();
-                        }
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                // Handle SSO vs Static differently
+                match profile_entry {
+                    ProfileEntry::Static { .. } => {
+                        self.status_message =
+                            Some("Static credential editing coming soon (Step 3.6)".to_string());
+                        return Ok(());
                     }
+                    ProfileEntry::Sso(account_with_status) => {
+                        let account = account_with_status.account_role;
 
-                    self.new_profile_input_cursor = self.new_profile_name_input.len();
-                    self.existing_profile_name = None;
+                        // Get current session name for unified profile lookup
+                        let session_name =
+                            if let Some(selected_session) = self.get_selected_session() {
+                                selected_session.session_name.clone()
+                            } else {
+                                self.status_message = Some("No SSO session selected".to_string());
+                                return Ok(());
+                            };
+
+                        // Look up existing profile using unified lookup
+                        let existing_profile = crate::aws_config::get_profile_by_role(
+                            &session_name,
+                            &account.account_id,
+                            &account.role_name,
+                        )?;
+
+                        if let Some(profile_info) = existing_profile {
+                            // Edit existing profile - pre-fill with current values
+                            self.new_profile_name_input = profile_info.name.clone();
+                            self.new_profile_region_input = profile_info.region;
+                            self.new_profile_output_input = profile_info.output;
+                            self.new_profile_input_cursor = self.new_profile_name_input.len();
+                            self.existing_profile_name = Some(profile_info.name);
+                        } else {
+                            // Create new profile - use defaults
+                            let default_profile_name = format!(
+                                "{}_{}",
+                                account
+                                    .account_name
+                                    .replace(" ", "-")
+                                    .replace("_", "-")
+                                    .to_lowercase(),
+                                account
+                                    .role_name
+                                    .replace(" ", "-")
+                                    .replace("_", "-")
+                                    .to_lowercase()
+                            );
+                            self.new_profile_name_input = default_profile_name;
+
+                            // Try to get defaults from awsom-defaults
+                            match crate::aws_config::read_awsom_defaults()? {
+                                Some(defaults) => {
+                                    self.new_profile_region_input = defaults.region;
+                                    self.new_profile_output_input = defaults.output;
+                                }
+                                None => {
+                                    // Use hardcoded fallback if awsom-defaults doesn't exist
+                                    self.new_profile_region_input = "us-east-1".to_string();
+                                    self.new_profile_output_input = "json".to_string();
+                                }
+                            }
+
+                            self.new_profile_input_cursor = self.new_profile_name_input.len();
+                            self.existing_profile_name = None;
+                        }
+
+                        self.pending_role = Some(account);
+                        self.state = AppState::NewProfileConfigInput {
+                            step: NewProfileConfigStep::ProfileName,
+                        };
+                        self.status_message = Some("Edit profile configuration".to_string());
+                    }
                 }
-
-                self.pending_role = Some(account);
-                self.state = AppState::NewProfileConfigInput {
-                    step: NewProfileConfigStep::ProfileName,
-                };
-                self.status_message = Some("Edit profile configuration".to_string());
             }
         }
         Ok(())
@@ -1402,6 +1491,220 @@ impl App {
                         if c.is_alphanumeric() || c == '-' || c == '_' {
                             self.sso_session_name_input.insert(self.sso_input_cursor, c);
                             self.sso_input_cursor += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_static_credential_input_key(&mut self, key: KeyCode) -> Result<()> {
+        let current_step = if let AppState::StaticCredentialInput { step } = &self.state {
+            step.clone()
+        } else {
+            return Ok(());
+        };
+
+        match key {
+            KeyCode::Enter => {
+                // Move to next step or save configuration
+                match current_step {
+                    StaticCredentialStep::ProfileName => {
+                        if self.static_profile_name_input.trim().is_empty() {
+                            self.status_message = Some("Profile name is required".to_string());
+                        } else {
+                            self.state = AppState::StaticCredentialInput {
+                                step: StaticCredentialStep::AccessKeyId,
+                            };
+                            self.static_input_cursor = self.static_access_key_input.len();
+                        }
+                    }
+                    StaticCredentialStep::AccessKeyId => {
+                        if self.static_access_key_input.trim().is_empty() {
+                            self.status_message = Some("Access Key ID is required".to_string());
+                        } else {
+                            self.state = AppState::StaticCredentialInput {
+                                step: StaticCredentialStep::SecretAccessKey,
+                            };
+                            self.static_input_cursor = self.static_secret_key_input.len();
+                        }
+                    }
+                    StaticCredentialStep::SecretAccessKey => {
+                        if self.static_secret_key_input.trim().is_empty() {
+                            self.status_message = Some("Secret Access Key is required".to_string());
+                        } else {
+                            self.state = AppState::StaticCredentialInput {
+                                step: StaticCredentialStep::SessionToken,
+                            };
+                            self.static_input_cursor = self.static_session_token_input.len();
+                        }
+                    }
+                    StaticCredentialStep::SessionToken => {
+                        // Save static credentials (session token is optional)
+                        let session_token = if self.static_session_token_input.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.static_session_token_input.trim().to_string())
+                        };
+
+                        let creds = crate::models::StaticCredentials {
+                            access_key_id: self.static_access_key_input.trim().to_string(),
+                            secret_access_key: self.static_secret_key_input.trim().to_string(),
+                            session_token,
+                        };
+
+                        // Validate credentials
+                        if let Err(e) = creds.validate() {
+                            self.status_message = Some(format!("Validation error: {}", e));
+                            return Ok(());
+                        }
+
+                        let profile_name = self.static_profile_name_input.trim();
+                        match crate::aws_config::write_static_credentials(profile_name, &creds) {
+                            Ok(()) => {
+                                self.status_message = Some(format!(
+                                    "✓ Static credentials '{}' saved to ~/.aws/credentials",
+                                    profile_name
+                                ));
+                                self.state = AppState::Main;
+
+                                // Clear input buffers
+                                self.static_profile_name_input.clear();
+                                self.static_access_key_input.clear();
+                                self.static_secret_key_input.clear();
+                                self.static_session_token_input.clear();
+                                self.static_input_cursor = 0;
+
+                                // Reload accounts to show the new profile
+                                if let Err(e) = self.load_accounts().await {
+                                    tracing::warn!("Failed to reload accounts: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("Error saving credentials: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                // Cancel configuration
+                self.state = AppState::Main;
+                self.static_profile_name_input.clear();
+                self.static_access_key_input.clear();
+                self.static_secret_key_input.clear();
+                self.static_session_token_input.clear();
+                self.static_input_cursor = 0;
+                self.status_message = Some("Configuration cancelled".to_string());
+            }
+            KeyCode::Left => {
+                if self.static_input_cursor > 0 {
+                    self.static_input_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let max_len = match current_step {
+                    StaticCredentialStep::ProfileName => self.static_profile_name_input.len(),
+                    StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
+                    StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
+                    StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
+                };
+                if self.static_input_cursor < max_len {
+                    self.static_input_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.static_input_cursor = 0;
+            }
+            KeyCode::End => {
+                self.static_input_cursor = match current_step {
+                    StaticCredentialStep::ProfileName => self.static_profile_name_input.len(),
+                    StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
+                    StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
+                    StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
+                };
+            }
+            KeyCode::Backspace => {
+                if self.static_input_cursor > 0 {
+                    match current_step {
+                        StaticCredentialStep::ProfileName => {
+                            self.static_profile_name_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                        StaticCredentialStep::AccessKeyId => {
+                            self.static_access_key_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                        StaticCredentialStep::SecretAccessKey => {
+                            self.static_secret_key_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                        StaticCredentialStep::SessionToken => {
+                            self.static_session_token_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                    }
+                    self.static_input_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => match current_step {
+                StaticCredentialStep::ProfileName => {
+                    if self.static_input_cursor < self.static_profile_name_input.len() {
+                        self.static_profile_name_input
+                            .remove(self.static_input_cursor);
+                    }
+                }
+                StaticCredentialStep::AccessKeyId => {
+                    if self.static_input_cursor < self.static_access_key_input.len() {
+                        self.static_access_key_input
+                            .remove(self.static_input_cursor);
+                    }
+                }
+                StaticCredentialStep::SecretAccessKey => {
+                    if self.static_input_cursor < self.static_secret_key_input.len() {
+                        self.static_secret_key_input
+                            .remove(self.static_input_cursor);
+                    }
+                }
+                StaticCredentialStep::SessionToken => {
+                    if self.static_input_cursor < self.static_session_token_input.len() {
+                        self.static_session_token_input
+                            .remove(self.static_input_cursor);
+                    }
+                }
+            },
+            KeyCode::Char(c) => {
+                match current_step {
+                    StaticCredentialStep::ProfileName => {
+                        // Allow alphanumeric, dash, and underscore
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            self.static_profile_name_input
+                                .insert(self.static_input_cursor, c);
+                            self.static_input_cursor += 1;
+                        }
+                    }
+                    StaticCredentialStep::AccessKeyId
+                    | StaticCredentialStep::SecretAccessKey
+                    | StaticCredentialStep::SessionToken => {
+                        // Allow all printable ASCII characters except whitespace
+                        if !c.is_whitespace() && c.is_ascii() {
+                            let target_input = match current_step {
+                                StaticCredentialStep::AccessKeyId => {
+                                    &mut self.static_access_key_input
+                                }
+                                StaticCredentialStep::SecretAccessKey => {
+                                    &mut self.static_secret_key_input
+                                }
+                                StaticCredentialStep::SessionToken => {
+                                    &mut self.static_session_token_input
+                                }
+                                _ => unreachable!(),
+                            };
+                            target_input.insert(self.static_input_cursor, c);
+                            self.static_input_cursor += 1;
                         }
                     }
                 }
@@ -2382,27 +2685,46 @@ impl App {
                         (bool, Option<chrono::DateTime<chrono::Utc>>, bool),
                     > = HashMap::new();
 
+                    // Collect static profiles separately
+                    let mut static_profiles: Vec<ProfileEntry> = Vec::new();
+
                     for status in statuses {
                         if status.has_credentials {
-                            if let (Some(account_id), Some(role_name)) =
-                                (status.account_id, status.role_name)
-                            {
-                                // Check if this is the default profile
-                                let is_default = status.profile_name == "default";
+                            match status.credential_type {
+                                crate::models::CredentialType::Sso => {
+                                    if let (Some(account_id), Some(role_name)) =
+                                        (status.account_id, status.role_name)
+                                    {
+                                        // Check if this is the default profile
+                                        let is_default = status.profile_name == "default";
 
-                                // Check if credentials are expired
-                                let is_active = if let Some(expiration) = status.expiration {
-                                    chrono::Utc::now() < expiration
-                                } else {
-                                    // No expiration info means credentials exist but we can't verify validity
-                                    true
-                                };
+                                        // Check if credentials are expired
+                                        let is_active = if let Some(expiration) = status.expiration
+                                        {
+                                            chrono::Utc::now() < expiration
+                                        } else {
+                                            // No expiration info means credentials exist but we can't verify validity
+                                            true
+                                        };
 
-                                // Match by account ID and role name from metadata
-                                profile_map.insert(
-                                    (account_id, role_name),
-                                    (is_active, status.expiration, is_default),
-                                );
+                                        // Match by account ID and role name from metadata
+                                        profile_map.insert(
+                                            (account_id, role_name),
+                                            (is_active, status.expiration, is_default),
+                                        );
+                                    }
+                                }
+                                crate::models::CredentialType::Static => {
+                                    // Add static profile entry
+                                    if let Some(creds) = status.static_credentials {
+                                        let is_default = status.profile_name == "default";
+                                        static_profiles.push(ProfileEntry::Static {
+                                            profile_name: status.profile_name,
+                                            is_default,
+                                            credentials: creds,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
@@ -2412,8 +2734,8 @@ impl App {
                         .get_selected_session()
                         .map(|selected_session| selected_session.session_name.clone());
 
-                    // Wrap roles with status
-                    let mut accounts_with_status: Vec<AccountRoleWithStatus> = all_roles
+                    // Wrap SSO roles with status
+                    let sso_profiles: Vec<ProfileEntry> = all_roles
                         .into_iter()
                         .map(|account_role| {
                             // Match by account ID and role name
@@ -2440,25 +2762,54 @@ impl App {
                                 None
                             };
 
-                            AccountRoleWithStatus {
+                            ProfileEntry::Sso(AccountRoleWithStatus {
                                 account_role,
                                 is_active,
                                 expiration,
                                 is_default,
                                 profile_name,
-                            }
+                            })
                         })
                         .collect();
 
-                    // Sort by account name, then by role name
-                    accounts_with_status.sort_by(|a, b| {
-                        a.account_role
-                            .account_name
-                            .cmp(&b.account_role.account_name)
-                            .then_with(|| a.account_role.role_name.cmp(&b.account_role.role_name))
+                    // Combine SSO and static profiles
+                    let mut all_profiles: Vec<ProfileEntry> = sso_profiles;
+                    all_profiles.extend(static_profiles);
+
+                    // Sort: SSO profiles by account/role name, static profiles by profile name
+                    all_profiles.sort_by(|a, b| {
+                        match (a, b) {
+                            (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
+                                .account_role
+                                .account_name
+                                .cmp(&b_status.account_role.account_name)
+                                .then_with(|| {
+                                    a_status
+                                        .account_role
+                                        .role_name
+                                        .cmp(&b_status.account_role.role_name)
+                                }),
+                            (
+                                ProfileEntry::Static {
+                                    profile_name: a_name,
+                                    ..
+                                },
+                                ProfileEntry::Static {
+                                    profile_name: b_name,
+                                    ..
+                                },
+                            ) => a_name.cmp(b_name),
+                            // Sort SSO profiles before static profiles
+                            (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => {
+                                std::cmp::Ordering::Less
+                            }
+                            (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => {
+                                std::cmp::Ordering::Greater
+                            }
+                        }
                     });
 
-                    self.accounts = accounts_with_status;
+                    self.accounts = all_profiles;
                     self.state = AppState::Main;
                     self.status_message = Some(format!(
                         "Loaded {} account/role combinations",
@@ -2514,7 +2865,17 @@ impl App {
     /// Open AWS Console in browser for selected role
     async fn open_console(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
-            if let Some(account_with_status) = self.accounts.get(index).cloned() {
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                // Only SSO profiles support console access
+                let account_with_status = match profile_entry {
+                    ProfileEntry::Sso(status) => status,
+                    ProfileEntry::Static { .. } => {
+                        self.status_message =
+                            Some("Console access is only available for SSO profiles".to_string());
+                        return Ok(());
+                    }
+                };
+
                 let account = account_with_status.account_role;
 
                 // Check if credentials are active
@@ -2582,6 +2943,9 @@ impl App {
             AppState::NewProfileConfigInput { step } => {
                 self.draw_new_profile_config_input_screen(f, step.clone())
             }
+            AppState::StaticCredentialInput { step } => {
+                self.draw_static_credential_input_screen(f, step.clone())
+            }
             AppState::ConfirmationDialog { title, message } => {
                 self.draw_confirmation_dialog(f, title.clone(), message.clone())
             }
@@ -2624,63 +2988,100 @@ impl App {
         let rows: Vec<Row> = self
             .accounts
             .iter()
-            .map(|account_with_status| {
-                let account = &account_with_status.account_role;
+            .map(|profile_entry| {
+                match profile_entry {
+                    ProfileEntry::Sso(account_with_status) => {
+                        let account = &account_with_status.account_role;
 
-                // Default marker
-                let default_mark = if account_with_status.is_default {
-                    "✓"
-                } else {
-                    ""
-                };
-
-                // Calculate expiration status and actual active state
-                let (is_actually_active, expiration_status) = if account_with_status.is_active {
-                    if let Some(expiration) = account_with_status.expiration {
-                        let now = chrono::Utc::now();
-                        let remaining_secs = (expiration - now).num_seconds();
-
-                        if remaining_secs > 0 {
-                            let hours = remaining_secs / 3600;
-                            let mins = (remaining_secs % 3600) / 60;
-
-                            let display = if hours > 0 {
-                                format!("{}h {}m", hours, mins)
-                            } else {
-                                format!("{}m", mins)
-                            };
-                            (true, display)
+                        // Default marker
+                        let default_mark = if account_with_status.is_default {
+                            "✓"
                         } else {
-                            (false, "EXPIRED".to_string())
-                        }
-                    } else {
-                        (true, "".to_string())
+                            ""
+                        };
+
+                        // Calculate expiration status and actual active state
+                        let (is_actually_active, expiration_status) =
+                            if account_with_status.is_active {
+                                if let Some(expiration) = account_with_status.expiration {
+                                    let now = chrono::Utc::now();
+                                    let remaining_secs = (expiration - now).num_seconds();
+
+                                    if remaining_secs > 0 {
+                                        let hours = remaining_secs / 3600;
+                                        let mins = (remaining_secs % 3600) / 60;
+
+                                        let display = if hours > 0 {
+                                            format!("{}h {}m", hours, mins)
+                                        } else {
+                                            format!("{}m", mins)
+                                        };
+                                        (true, display)
+                                    } else {
+                                        (false, "EXPIRED".to_string())
+                                    }
+                                } else {
+                                    (true, "".to_string())
+                                }
+                            } else {
+                                (false, "".to_string())
+                            };
+
+                        // Status indicator based on actual expiration state
+                        let status = if is_actually_active { "🟢" } else { "🔴" };
+
+                        // Profile name or "N/A"
+                        let profile_display =
+                            account_with_status.profile_name.as_deref().unwrap_or("N/A");
+
+                        Row::new(vec![
+                            Cell::new(Text::from("SSO").alignment(Alignment::Center)),
+                            Cell::new(Text::from(status).alignment(Alignment::Center)),
+                            Cell::new(Text::from(default_mark).alignment(Alignment::Center)),
+                            Cell::new(
+                                Text::from(account.account_name.clone())
+                                    .alignment(Alignment::Center),
+                            ),
+                            Cell::new(
+                                Text::from(account.account_id.clone()).alignment(Alignment::Center),
+                            ),
+                            Cell::new(
+                                Text::from(account.role_name.clone()).alignment(Alignment::Center),
+                            ),
+                            Cell::new(Text::from(profile_display).alignment(Alignment::Center)),
+                            Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
+                        ])
                     }
-                } else {
-                    (false, "".to_string())
-                };
+                    ProfileEntry::Static {
+                        profile_name,
+                        is_default,
+                        ..
+                    } => {
+                        // Default marker
+                        let default_mark = if *is_default { "✓" } else { "" };
 
-                // Status indicator based on actual expiration state
-                let status = if is_actually_active { "🟢" } else { "🔴" };
+                        // Static credentials are always active (no expiration)
+                        let status = "🟢";
 
-                // Profile name or "N/A"
-                let profile_display = account_with_status.profile_name.as_deref().unwrap_or("N/A");
-
-                Row::new(vec![
-                    Cell::new(Text::from(status).alignment(Alignment::Center)),
-                    Cell::new(Text::from(default_mark).alignment(Alignment::Center)),
-                    Cell::new(
-                        Text::from(account.account_name.clone()).alignment(Alignment::Center),
-                    ),
-                    Cell::new(Text::from(account.account_id.clone()).alignment(Alignment::Center)),
-                    Cell::new(Text::from(account.role_name.clone()).alignment(Alignment::Center)),
-                    Cell::new(Text::from(profile_display).alignment(Alignment::Center)),
-                    Cell::new(Text::from(expiration_status).alignment(Alignment::Center)),
-                ])
+                        Row::new(vec![
+                            Cell::new(Text::from("STATIC").alignment(Alignment::Center)),
+                            Cell::new(Text::from(status).alignment(Alignment::Center)),
+                            Cell::new(Text::from(default_mark).alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(
+                                Text::from(profile_name.clone()).alignment(Alignment::Center),
+                            ),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                        ])
+                    }
+                }
             })
             .collect();
 
         let header = Row::new(vec![
+            Cell::new(Text::from("Type").alignment(Alignment::Center)),
             Cell::new(Text::from("Status").alignment(Alignment::Center)),
             Cell::new(Text::from("Default").alignment(Alignment::Center)),
             Cell::new(Text::from("Account").alignment(Alignment::Center)),
@@ -2713,8 +3114,9 @@ impl App {
         let table = Table::new(
             rows,
             [
+                Constraint::Length(6),  // Type
                 Constraint::Length(6),  // Status
-                Constraint::Length(7),  // Default (was 3, now wider for "Default")
+                Constraint::Length(7),  // Default
                 Constraint::Min(15),    // Account Name
                 Constraint::Length(12), // Account ID
                 Constraint::Min(15),    // Role Name
@@ -3295,6 +3697,130 @@ impl App {
         // Help
         let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
             .style(Style::default().fg(Color::Gray));
+        f.render_widget(help, chunks[4]);
+    }
+
+    fn draw_static_credential_input_screen(&self, f: &mut Frame, step: StaticCredentialStep) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // Title
+                Constraint::Length(12), // Instructions
+                Constraint::Length(3),  // Input
+                Constraint::Min(0),     // Spacer
+                Constraint::Length(2),  // Help
+            ])
+            .split(f.area());
+
+        // Title
+        let title = Paragraph::new("Add Static AWS Credentials")
+            .style(
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.mauve))
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(title, chunks[0]);
+
+        // Instructions based on current step
+        let (step_title, instructions, example) = match step {
+            StaticCredentialStep::ProfileName => (
+                "Step 1 of 4: Profile Name",
+                "Enter a name for this credential profile",
+                "Example: my-dev-profile",
+            ),
+            StaticCredentialStep::AccessKeyId => (
+                "Step 2 of 4: AWS Access Key ID",
+                "Enter your AWS Access Key ID",
+                "Example: AKIAIOSFODNN7EXAMPLE",
+            ),
+            StaticCredentialStep::SecretAccessKey => (
+                "Step 3 of 4: AWS Secret Access Key",
+                "Enter your AWS Secret Access Key",
+                "Example: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            ),
+            StaticCredentialStep::SessionToken => (
+                "Step 4 of 4: Session Token (Optional)",
+                "Enter session token for temporary credentials (or leave empty)",
+                "Leave empty for long-term credentials",
+            ),
+        };
+
+        let mut info_text = vec![
+            Line::from(Span::styled(
+                step_title,
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.yellow))
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(instructions),
+            Line::from(""),
+            Line::from(Span::styled(
+                example,
+                Style::default().fg(catppuccin_color(self.theme.colors.overlay0)),
+            )),
+            Line::from(""),
+        ];
+
+        // Add warning for secret fields
+        if matches!(
+            step,
+            StaticCredentialStep::SecretAccessKey | StaticCredentialStep::SessionToken
+        ) {
+            info_text.push(Line::from(Span::styled(
+                "⚠  WARNING: This will be stored in plaintext in ~/.aws/credentials",
+                Style::default().fg(catppuccin_color(self.theme.colors.red)),
+            )));
+        } else {
+            info_text.push(Line::from(
+                "The credentials will be saved to ~/.aws/credentials",
+            ));
+        }
+
+        let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));
+        f.render_widget(info, chunks[1]);
+
+        // Input field with cursor (mask secret key and session token)
+        let (current_input, field_label, mask_input) = match step {
+            StaticCredentialStep::ProfileName => {
+                (&self.static_profile_name_input, "Profile Name", false)
+            }
+            StaticCredentialStep::AccessKeyId => {
+                (&self.static_access_key_input, "Access Key ID", false)
+            }
+            StaticCredentialStep::SecretAccessKey => {
+                (&self.static_secret_key_input, "Secret Access Key", true)
+            }
+            StaticCredentialStep::SessionToken => (
+                &self.static_session_token_input,
+                "Session Token (Optional)",
+                true,
+            ),
+        };
+
+        let display_text = if mask_input && !current_input.is_empty() {
+            "*".repeat(current_input.len())
+        } else {
+            current_input.clone()
+        };
+
+        let input_with_cursor = if display_text.is_empty() {
+            "█".to_string()
+        } else {
+            let cursor_pos = self.static_input_cursor.min(display_text.len());
+            let (before, after) = display_text.split_at(cursor_pos);
+            format!("{}█{}", before, after)
+        };
+
+        let input = Paragraph::new(input_with_cursor.as_str())
+            .style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
+            .block(Block::default().borders(Borders::ALL).title(field_label));
+        f.render_widget(input, chunks[2]);
+
+        // Help
+        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
+            .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[4]);
     }
 
