@@ -1450,6 +1450,68 @@ pub fn write_static_credentials(
     Ok(())
 }
 
+/// Delete static credentials for a profile
+pub fn delete_static_credentials(profile_name: &str) -> Result<()> {
+    let creds_path = credentials_file_path()?;
+
+    // If credentials file doesn't exist, nothing to delete
+    if !creds_path.exists() {
+        return Ok(());
+    }
+
+    // Read existing credentials
+    let existing_content = fs::read_to_string(&creds_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read credentials file: {}", e)))?;
+
+    // Parse credentials to find and remove the profile
+    let mut new_content = String::new();
+    let mut in_target_profile = false;
+    let mut skip_next_blank = false;
+
+    for line in existing_content.lines() {
+        let trimmed = line.trim();
+
+        // Check if this is the start of our target profile
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section_name = &trimmed[1..trimmed.len() - 1];
+            in_target_profile = section_name == profile_name;
+
+            if in_target_profile {
+                // Skip this profile section entirely
+                skip_next_blank = true;
+                continue;
+            }
+        } else if trimmed.is_empty() {
+            // If we just skipped a profile, skip the first blank line too
+            if skip_next_blank {
+                skip_next_blank = false;
+                continue;
+            }
+        }
+
+        // If we're in the target profile, skip all its lines
+        if in_target_profile {
+            // Check if we've reached the next section
+            if trimmed.starts_with('[') {
+                in_target_profile = false;
+                new_content.push_str(line);
+                new_content.push('\n');
+            }
+            // Otherwise skip the line (it's part of the profile being deleted)
+        } else {
+            // Keep this line
+            new_content.push_str(line);
+            new_content.push('\n');
+        }
+    }
+
+    // Write the updated credentials back
+    fs::write(&creds_path, new_content)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+
+    Ok(())
+}
+
 /// Type alias for profile parsing result
 type ProfilesParseResult = (
     Option<Vec<(String, String)>>,

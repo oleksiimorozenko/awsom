@@ -595,6 +595,12 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('D') => {
+                if self.active_pane == ActivePane::Accounts {
+                    // Delete static credential (Shift+D)
+                    self.delete_static_profile().await?;
+                }
+            }
             KeyCode::Char('c') => {
                 if self.active_pane == ActivePane::Accounts {
                     // Open AWS Console in browser
@@ -875,6 +881,43 @@ impl App {
             step: StaticCredentialStep::ProfileName,
         };
         self.status_message = Some("Add new static credential profile".to_string());
+        Ok(())
+    }
+
+    /// Delete the selected static credential profile
+    async fn delete_static_profile(&mut self) -> Result<()> {
+        if let Some(index) = self.accounts_list_state.selected() {
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                match profile_entry {
+                    ProfileEntry::Static { profile_name, .. } => {
+                        // Delete the static credential
+                        match crate::aws_config::delete_static_credentials(&profile_name) {
+                            Ok(()) => {
+                                self.status_message = Some(format!(
+                                    "✓ Deleted static credential profile '{}'",
+                                    profile_name
+                                ));
+
+                                // Reload accounts to update the list
+                                if let Err(e) = self.load_accounts().await {
+                                    tracing::warn!(
+                                        "Failed to reload accounts after deletion: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("Error deleting profile: {}", e));
+                            }
+                        }
+                    }
+                    ProfileEntry::Sso(_) => {
+                        self.status_message = Some("Use lowercase 'd' to set as default. SSO profiles cannot be deleted from here.".to_string());
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -3185,6 +3228,8 @@ impl App {
                 Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":make default "),
+                Span::styled("D", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":delete static "),
                 Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":console "),
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
