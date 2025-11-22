@@ -185,22 +185,27 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 **Keyboard Shortcuts:**
 - `q` or `Esc` - Quit application
 - `?` or `F1` - Show help screen
+- `Tab` - Switch between Sessions and Profiles panes
 - `l` - Login/Logout (toggle)
 - `r` - Refresh account/role list
 - `↑`/`k` - Move selection up
 - `↓`/`j` - Move selection down
 - `Enter` - Start/stop session for selected role (activates or invalidates credentials)
-- `p` - Edit profile name for selected role
+- `e` - Edit profile configuration
+- `v` - View profile details
 - `d` - Set selected role's profile as default
+- `D` - Delete selected profile
 - `c` - Open AWS Console in browser for selected role
 
 **Features:**
-- **Visual Indicators**: 🟢 Active sessions / 🔴 Inactive sessions
+- **Visual Indicators**: 🟢 Active sessions / 🔴 Inactive / ⚠ Incomplete
+- **Profile Types**: SSO profiles, STATIC credentials, and CONFIG-only (incomplete) profiles
 - **Default Profile Marker**: ✓ shows which profile is set as default
 - **Expiration Countdown**: Real-time display of remaining session time
 - **Automatic Session Loading**: Auto-loads cached SSO sessions on startup
 - **Profile Management**: Create, rename, and delete AWS credential profiles
 - **Console Access**: One-key access to AWS Console with federated sign-in
+- **Smart Cache**: Disk cache with automatic invalidation when config files change
 
 **Setup:**
 1. Launch TUI: `awsom`
@@ -406,97 +411,6 @@ awsom session login --start-url https://prod.awsapps.com/start --region us-east-
 
 # Export common profiles
 awsom profile export --account-name Production --role-name Developer --profile prod-dev
-```
-
-### `import` - Import existing configurations to awsom management
-
-**Migrate your existing AWS configurations to awsom's automatic organization!**
-
-The `import` command allows you to move existing SSO sessions and profiles from the user-managed section to awsom's managed section, where they will be automatically organized and sorted.
-
-#### Why use import?
-
-When you first start using awsom with existing AWS configurations, awsom creates marker lines in your `~/.aws/config` file to separate:
-- **User-managed sections** (above the marker) - Your existing configs that awsom won't touch
-- **Awsom-managed sections** (below the marker) - Automatically organized with alphabetical sorting
-
-The import command helps you migrate your existing configurations to awsom management, giving you:
-- ✅ Automatic alphabetical sorting
-- ✅ Consistent formatting
-- ✅ Integration with awsom's TUI
-- ✅ Collision detection to prevent overwrites
-
-#### Import an SSO session
-
-```bash
-# Interactive import with preview
-awsom import SA-SSO --section-type sso-session
-
-# Force import without confirmation (for scripts)
-awsom import SA-SSO --section-type sso-session --force
-```
-
-Example output:
-```
-Found sso-session to import:
-
-[sso-session SA-SSO]
-sso_start_url = https://seeking-alpha.awsapps.com/start
-sso_region = us-west-2
-sso_registration_scopes = sso:account:access
-
-Move this sso-session to awsom management? (y/N): y
-✓ Imported SSO session 'SA-SSO' to awsom management
-
-The sso-session has been moved from user-managed to awsom-managed section.
-It will now be automatically organized and sorted by awsom.
-```
-
-#### Import a profile
-
-```bash
-# Import a profile
-awsom import my-profile --section-type profile
-
-# Or just omit --section-type (defaults to profile)
-awsom import my-profile
-```
-
-**Use Cases:**
-- **Migrating to awsom**: Import your existing AWS configs when you start using awsom
-- **Team standardization**: Import individual configs into awsom's managed format
-- **Cleanup**: Let awsom organize and sort your existing configurations
-
-**How it works:**
-1. Finds the section in the user-managed area (above marker)
-2. Shows you a preview and asks for confirmation (unless `--force`)
-3. Removes it from user-managed area
-4. Adds it to awsom-managed area with automatic sorting
-5. Your configuration is now managed by awsom!
-
-**Config File Structure:**
-
-Before import:
-```ini
-# Your existing config
-[sso-session SA-SSO]
-...
-
-[profile my-profile]
-...
-
-# ==================== Managed by awsom ====================
-# (awsom's organized sections)
-```
-
-After import:
-```ini
-# Your other configs
-...
-
-# ==================== Managed by awsom ====================
-[sso-session SA-SSO]  ← Now managed and sorted by awsom
-...
 ```
 
 ### `completions` - Generate shell completions
@@ -725,18 +639,21 @@ This will show:
 
 ## Roadmap
 
-**Current Status: v0.1.0 - Feature Complete! 🎉**
+**Current Status: v0.8.0 - Multi-Profile Support! 🎉**
 
 All core features are now implemented and working:
 - ✅ AWS SSO authentication with device flow
 - ✅ Full TUI interface with profile management
-- ✅ All CLI commands (`session`, `profile`, `import`, `completions`)
+- ✅ All CLI commands (`session`, `profile`, `completions`)
 - ✅ AWS credentials file integration
 - ✅ Console federated sign-in
 - ✅ Session status checking for automation (via `session status`)
 - ✅ Real-time expiration tracking
 - ✅ Profile management (create, rename, delete, set default)
 - ✅ Configuration file support
+- ✅ Static credentials support (non-SSO profiles)
+- ✅ Incomplete profile detection (config-only profiles)
+- ✅ Smart disk cache with automatic invalidation
 
 **Future Enhancements:**
 - Background session refresh

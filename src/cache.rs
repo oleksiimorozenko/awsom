@@ -96,7 +96,42 @@ pub fn save_profiles(profiles: &[CachedProfile]) -> Result<()> {
     Ok(())
 }
 
+/// Check if AWS config or credentials files have been modified since cache was created
+fn is_cache_invalidated(cache: &ProfileCache) -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return true, // Can't determine home, invalidate to be safe
+    };
+
+    let config_path = home.join(".aws").join("config");
+    let credentials_path = home.join(".aws").join("credentials");
+
+    // Check if either file was modified after the cache was created
+    for path in [config_path, credentials_path] {
+        if path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    // Convert SystemTime to DateTime<Utc>
+                    let modified_dt: DateTime<Utc> = modified.into();
+                    if modified_dt > cache.cached_at {
+                        tracing::debug!(
+                            "Cache invalidated: {:?} modified at {:?}, cache from {:?}",
+                            path,
+                            modified_dt,
+                            cache.cached_at
+                        );
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// Load profiles from disk cache
+/// Returns None if cache doesn't exist or is invalidated (config/credentials modified)
 pub fn load_profiles() -> Result<Option<ProfileCache>> {
     let cache_file = cache_file_path()?;
 
@@ -107,6 +142,12 @@ pub fn load_profiles() -> Result<Option<ProfileCache>> {
 
     let json = fs::read_to_string(&cache_file)?;
     let cache: ProfileCache = serde_json::from_str(&json)?;
+
+    // Check if cache is invalidated by config/credentials changes
+    if is_cache_invalidated(&cache) {
+        tracing::debug!("Cache invalidated due to config/credentials file changes");
+        return Ok(None);
+    }
 
     tracing::debug!(
         "Loaded {} profiles from cache ({:?}), cached {}",

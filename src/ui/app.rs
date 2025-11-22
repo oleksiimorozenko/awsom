@@ -64,6 +64,12 @@ enum ProfileEntry {
         is_default: bool,
         credentials: crate::models::StaticCredentials,
     },
+    /// Profile defined in config but without credentials
+    Incomplete {
+        profile_name: String,
+        region: Option<String>,
+        output: Option<String>,
+    },
 }
 
 /// SSO Session with its status
@@ -186,6 +192,8 @@ enum AppState {
     StaticCredentialInput { step: StaticCredentialStep },
     /// Confirmation dialog
     ConfirmationDialog { title: String, message: Vec<String> },
+    /// View profile details
+    ViewProfile { details: Vec<(String, String)> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,6 +361,16 @@ impl App {
             if !self.accounts.is_empty() {
                 self.active_pane = ActivePane::Accounts;
                 // Select first account
+                self.accounts_list_state.select(Some(0));
+            }
+        }
+
+        // If we still have no accounts (no SSO sessions or no token), load static profiles
+        // This handles the case where user has only static credentials with no SSO configured
+        if self.accounts.is_empty() {
+            self.load_static_profiles_only();
+            if !self.accounts.is_empty() {
+                self.active_pane = ActivePane::Accounts;
                 self.accounts_list_state.select(Some(0));
             }
         }
@@ -526,6 +544,10 @@ impl App {
             AppState::ConfirmationDialog { .. } => {
                 self.handle_confirmation_dialog_key(key).await?;
             }
+            AppState::ViewProfile { .. } => {
+                // Any key exits view profile screen
+                self.state = AppState::Main;
+            }
         }
         Ok(())
     }
@@ -674,6 +696,12 @@ impl App {
                 if self.active_pane == ActivePane::Sessions {
                     // Toggle session filter
                     self.toggle_session_filter().await?;
+                }
+            }
+            KeyCode::Char('v') => {
+                if self.active_pane == ActivePane::Accounts {
+                    // View profile details
+                    self.view_profile_details();
                 }
             }
             _ => {}
@@ -984,6 +1012,12 @@ impl App {
                     ProfileEntry::Sso(_) => {
                         self.status_message = Some("Use lowercase 'd' to set as default. SSO profiles cannot be deleted from here.".to_string());
                     }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        self.status_message = Some(format!(
+                            "Profile '{}' has no credentials to delete. It only exists in config.",
+                            profile_name
+                        ));
+                    }
                 }
             }
         }
@@ -1088,6 +1122,13 @@ impl App {
                     ProfileEntry::Sso(status) => status,
                     ProfileEntry::Static { .. } => {
                         self.status_message = Some("Static credentials cannot be toggled. Use 'e' to edit or 'd' to delete.".to_string());
+                        return Ok(());
+                    }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        self.status_message = Some(format!(
+                            "Profile '{}' has no credentials. Add credentials first.",
+                            profile_name
+                        ));
                         return Ok(());
                     }
                 };
@@ -1207,6 +1248,15 @@ impl App {
                     ProfileEntry::Static {
                         ref profile_name, ..
                     } => (Some(profile_name.clone()), None),
+                    ProfileEntry::Incomplete {
+                        ref profile_name, ..
+                    } => {
+                        self.status_message = Some(format!(
+                            "Profile '{}' has no credentials. Cannot set as default.",
+                            profile_name
+                        ));
+                        return Ok(());
+                    }
                 };
 
                 // Check if there's an existing profile
@@ -1408,6 +1458,12 @@ impl App {
                             step: NewProfileConfigStep::ProfileName,
                         };
                         self.status_message = Some("Edit profile configuration".to_string());
+                    }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        self.status_message = Some(format!(
+                            "Profile '{}' has no credentials. Add credentials first.",
+                            profile_name
+                        ));
                     }
                 }
             }
@@ -2167,13 +2223,21 @@ impl App {
                             from_profile,
                             account: _,
                         } => {
-                            // Delete existing default profile
-                            tracing::info!("Deleting existing default profile");
-                            if let Err(e) = crate::aws_config::delete_profile("default") {
-                                tracing::debug!(
-                                    "No existing default profile to delete (or error): {}",
-                                    e
+                            // Backup existing default profile with timestamp
+                            if crate::aws_config::profile_exists("default").unwrap_or(false) {
+                                let backup_name = format!(
+                                    "default-bak-{}",
+                                    chrono::Utc::now().format("%y%m%d-%H%M%S")
                                 );
+                                tracing::info!(
+                                    "Backing up existing default profile to '{}'",
+                                    backup_name
+                                );
+                                if let Err(e) =
+                                    crate::aws_config::rename_profile("default", &backup_name)
+                                {
+                                    tracing::warn!("Failed to backup default profile: {}", e);
+                                }
                             }
 
                             // Rename the profile to default
@@ -2790,9 +2854,11 @@ impl App {
 
     /// Load profiles from disk cache (for instant startup display)
     fn load_profiles_from_cache(&mut self, cache: &ProfileCache) {
-        self.accounts = cache
+        // Load SSO profiles from cache (excluding awsom-defaults which is internal)
+        let mut all_profiles: Vec<ProfileEntry> = cache
             .profiles
             .iter()
+            .filter(|cached| cached.profile_name != "awsom-defaults")
             .map(|cached| {
                 ProfileEntry::Sso(AccountRoleWithStatus {
                     account_role: cached.account_role.clone(),
@@ -2804,12 +2870,97 @@ impl App {
             })
             .collect();
 
+        // Also load static profiles from credentials file (not cached)
+        // Exclude awsom-defaults which is an internal profile
+        if let Ok(statuses) = crate::aws_config::list_profile_statuses() {
+            for status in statuses {
+                // Skip internal awsom-defaults profile
+                if status.profile_name == "awsom-defaults" {
+                    continue;
+                }
+                if status.has_credentials
+                    && status.credential_type == crate::models::CredentialType::Static
+                {
+                    if let Some(creds) = status.static_credentials {
+                        let is_default = status.profile_name == "default";
+                        all_profiles.push(ProfileEntry::Static {
+                            profile_name: status.profile_name,
+                            is_default,
+                            credentials: creds,
+                        });
+                    }
+                }
+            }
+        }
+
+        self.accounts = all_profiles;
+
         // Select first item if we have profiles
         if !self.accounts.is_empty() {
             self.accounts_list_state.select(Some(0));
         }
 
-        tracing::debug!("Loaded {} profiles from disk cache", self.accounts.len());
+        tracing::debug!(
+            "Loaded {} profiles from disk cache + static credentials",
+            self.accounts.len()
+        );
+    }
+
+    /// Load only static and incomplete profiles (when no SSO sessions are configured)
+    fn load_static_profiles_only(&mut self) {
+        let mut profiles: Vec<ProfileEntry> = Vec::new();
+        let mut profiles_with_credentials: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // First, load static profiles from credentials file
+        if let Ok(statuses) = crate::aws_config::list_profile_statuses() {
+            for status in statuses {
+                // Skip internal awsom-defaults profile
+                if status.profile_name == "awsom-defaults" {
+                    continue;
+                }
+                if status.has_credentials
+                    && status.credential_type == crate::models::CredentialType::Static
+                {
+                    if let Some(creds) = status.static_credentials {
+                        let is_default = status.profile_name == "default";
+                        profiles_with_credentials.insert(status.profile_name.clone());
+                        profiles.push(ProfileEntry::Static {
+                            profile_name: status.profile_name,
+                            is_default,
+                            credentials: creds,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Then, load incomplete profiles from config (profiles without credentials)
+        if let Ok(config_profiles) = crate::aws_config::list_all_config_profiles() {
+            for cp in config_profiles {
+                // Skip if we already have credentials for this profile
+                if profiles_with_credentials.contains(&cp.name) {
+                    continue;
+                }
+                // Skip SSO profiles (they should be loaded via SSO flow)
+                if cp.sso_session.is_some() || cp.sso_account_id.is_some() {
+                    continue;
+                }
+                // This is an incomplete profile (in config but no credentials)
+                profiles.push(ProfileEntry::Incomplete {
+                    profile_name: cp.name,
+                    region: cp.region,
+                    output: cp.output,
+                });
+            }
+        }
+
+        self.accounts = profiles;
+
+        tracing::debug!(
+            "Loaded {} profiles (static + incomplete, no SSO sessions configured)",
+            self.accounts.len()
+        );
     }
 
     /// Save current profiles to disk cache
@@ -2839,6 +2990,7 @@ impl App {
                         })
                     }
                     ProfileEntry::Static { .. } => None, // Don't cache static profiles
+                    ProfileEntry::Incomplete { .. } => None, // Don't cache incomplete profiles
                 }
             })
             .collect();
@@ -3011,6 +3163,10 @@ impl App {
             let mut static_profiles: Vec<ProfileEntry> = Vec::new();
 
             for status in statuses {
+                // Skip internal awsom-defaults profile
+                if status.profile_name == "awsom-defaults" {
+                    continue;
+                }
                 if status.has_credentials {
                     match status.credential_type {
                         crate::models::CredentialType::Sso => {
@@ -3088,11 +3244,112 @@ impl App {
                 })
                 .collect();
 
+            // Also load profiles from config file that may not be in AWS API results
+            // These are profiles that have been previously configured but the account/role
+            // might not appear in the current list (e.g., different SSO session)
+            let config_profiles = crate::aws_config::list_sso_profiles().unwrap_or_default();
+
+            // Create a set of (account_id, role_name) from AWS API results for deduplication
+            let api_keys: std::collections::HashSet<(String, String)> = sso_profiles
+                .iter()
+                .filter_map(|p| {
+                    if let ProfileEntry::Sso(status) = p {
+                        Some((
+                            status.account_role.account_id.clone(),
+                            status.account_role.role_name.clone(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Add config profiles that aren't already in the list
+            let mut config_entries: Vec<ProfileEntry> = Vec::new();
+            for config_profile in config_profiles {
+                // Skip internal awsom-defaults profile
+                if config_profile.name == "awsom-defaults" {
+                    continue;
+                }
+                // Skip if this profile is already in API results
+                if let (Some(ref account_id), Some(ref role_name)) = (
+                    &config_profile.sso_account_id,
+                    &config_profile.sso_role_name,
+                ) {
+                    if api_keys.contains(&(account_id.clone(), role_name.clone())) {
+                        continue;
+                    }
+
+                    // Check if this profile's session matches current session
+                    let is_current_session = if let (Some(ref config_sess), Some(ref curr_sess)) =
+                        (&config_profile.sso_session, &current_session_name)
+                    {
+                        config_sess == curr_sess
+                    } else {
+                        false
+                    };
+
+                    // Only show profiles from current session or profiles without session specified
+                    if is_current_session || config_profile.sso_session.is_none() {
+                        // Look up credential status for this profile
+                        let key = (account_id.clone(), role_name.clone());
+                        let (is_active, expiration, is_default) = profile_map
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or((false, None, config_profile.name == "default"));
+
+                        config_entries.push(ProfileEntry::Sso(AccountRoleWithStatus {
+                            account_role: crate::models::AccountRole {
+                                account_id: account_id.clone(),
+                                account_name: format!("(from config: {})", config_profile.name),
+                                role_name: role_name.clone(),
+                            },
+                            is_active,
+                            expiration,
+                            is_default,
+                            profile_name: Some(config_profile.name),
+                        }));
+                    }
+                }
+            }
+
             // Combine SSO and static profiles
             let mut all_profiles: Vec<ProfileEntry> = sso_profiles;
+            all_profiles.extend(config_entries);
             all_profiles.extend(static_profiles);
 
-            // Sort: SSO profiles by account/role name, static profiles by profile name
+            // Also load incomplete profiles (config without credentials)
+            // First, build a set of profile names that already have credentials
+            let profiles_with_creds: std::collections::HashSet<String> = all_profiles
+                .iter()
+                .filter_map(|p| match p {
+                    ProfileEntry::Sso(status) => status.profile_name.clone(),
+                    ProfileEntry::Static { profile_name, .. } => Some(profile_name.clone()),
+                    ProfileEntry::Incomplete { .. } => None,
+                })
+                .collect();
+
+            // Add incomplete profiles from config
+            if let Ok(config_profiles) = crate::aws_config::list_all_config_profiles() {
+                for cp in config_profiles {
+                    // Skip if we already have credentials for this profile
+                    if profiles_with_creds.contains(&cp.name) {
+                        continue;
+                    }
+                    // Skip SSO profiles (they should appear via SSO flow)
+                    if cp.sso_session.is_some() || cp.sso_account_id.is_some() {
+                        continue;
+                    }
+                    // This is an incomplete profile
+                    all_profiles.push(ProfileEntry::Incomplete {
+                        profile_name: cp.name,
+                        region: cp.region,
+                        output: cp.output,
+                    });
+                }
+            }
+
+            // Sort: SSO profiles by account/role name, static/incomplete profiles by profile name
             all_profiles.sort_by(|a, b| {
                 match (a, b) {
                     (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
@@ -3115,9 +3372,23 @@ impl App {
                             ..
                         },
                     ) => a_name.cmp(b_name),
-                    // Sort SSO profiles before static profiles
-                    (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => std::cmp::Ordering::Less,
-                    (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => {
+                    (
+                        ProfileEntry::Incomplete {
+                            profile_name: a_name,
+                            ..
+                        },
+                        ProfileEntry::Incomplete {
+                            profile_name: b_name,
+                            ..
+                        },
+                    ) => a_name.cmp(b_name),
+                    // Sort order: SSO < Static < Incomplete
+                    (ProfileEntry::Sso(_), _) => std::cmp::Ordering::Less,
+                    (_, ProfileEntry::Sso(_)) => std::cmp::Ordering::Greater,
+                    (ProfileEntry::Static { .. }, ProfileEntry::Incomplete { .. }) => {
+                        std::cmp::Ordering::Less
+                    }
+                    (ProfileEntry::Incomplete { .. }, ProfileEntry::Static { .. }) => {
                         std::cmp::Ordering::Greater
                     }
                 }
@@ -3147,17 +3418,21 @@ impl App {
 
             let mut all_profiles: Vec<ProfileEntry> = Vec::new();
 
-            // Add static profiles
-            for status in statuses {
+            // Add static profiles (excluding internal awsom-defaults)
+            for status in &statuses {
+                // Skip internal awsom-defaults profile
+                if status.profile_name == "awsom-defaults" {
+                    continue;
+                }
                 if status.has_credentials
                     && status.credential_type == crate::models::CredentialType::Static
                 {
-                    if let Some(creds) = status.static_credentials {
+                    if let Some(ref creds) = status.static_credentials {
                         let is_default = status.profile_name == "default";
                         all_profiles.push(ProfileEntry::Static {
-                            profile_name: status.profile_name,
+                            profile_name: status.profile_name.clone(),
                             is_default,
-                            credentials: creds,
+                            credentials: creds.clone(),
                         });
                     }
                 }
@@ -3185,6 +3460,113 @@ impl App {
                 }
             }
 
+            // Also load SSO profiles from config file
+            let config_profiles = crate::aws_config::list_sso_profiles().unwrap_or_default();
+
+            // Create a set of existing (account_id, role_name) for deduplication
+            let existing_keys: std::collections::HashSet<(String, String)> = all_profiles
+                .iter()
+                .filter_map(|p| {
+                    if let ProfileEntry::Sso(status) = p {
+                        Some((
+                            status.account_role.account_id.clone(),
+                            status.account_role.role_name.clone(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Build profile status map from credentials
+            #[allow(clippy::type_complexity)]
+            let mut profile_map: std::collections::HashMap<
+                (String, String),
+                (bool, Option<chrono::DateTime<chrono::Utc>>, bool),
+            > = std::collections::HashMap::new();
+
+            for status in &statuses {
+                if status.has_credentials
+                    && status.credential_type == crate::models::CredentialType::Sso
+                {
+                    if let (Some(account_id), Some(role_name)) =
+                        (&status.account_id, &status.role_name)
+                    {
+                        let is_default = status.profile_name == "default";
+                        let is_active = if let Some(exp) = status.expiration {
+                            chrono::Utc::now() < exp
+                        } else {
+                            false
+                        };
+                        profile_map.insert(
+                            (account_id.clone(), role_name.clone()),
+                            (is_active, status.expiration, is_default),
+                        );
+                    }
+                }
+            }
+
+            // Add config profiles that aren't already in the list
+            for config_profile in config_profiles {
+                // Skip internal awsom-defaults profile
+                if config_profile.name == "awsom-defaults" {
+                    continue;
+                }
+                if let (Some(ref account_id), Some(ref role_name)) = (
+                    &config_profile.sso_account_id,
+                    &config_profile.sso_role_name,
+                ) {
+                    if existing_keys.contains(&(account_id.clone(), role_name.clone())) {
+                        continue;
+                    }
+
+                    // Look up credential status for this profile
+                    let key = (account_id.clone(), role_name.clone());
+                    let (is_active, expiration, is_default) = profile_map
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or((false, None, config_profile.name == "default"));
+
+                    all_profiles.push(ProfileEntry::Sso(AccountRoleWithStatus {
+                        account_role: crate::models::AccountRole {
+                            account_id: account_id.clone(),
+                            account_name: format!("(from config: {})", config_profile.name),
+                            role_name: role_name.clone(),
+                        },
+                        is_active,
+                        expiration,
+                        is_default,
+                        profile_name: Some(config_profile.name),
+                    }));
+                }
+            }
+
+            // Also load incomplete profiles (config without credentials)
+            let profiles_with_creds: std::collections::HashSet<String> = all_profiles
+                .iter()
+                .filter_map(|p| match p {
+                    ProfileEntry::Sso(status) => status.profile_name.clone(),
+                    ProfileEntry::Static { profile_name, .. } => Some(profile_name.clone()),
+                    ProfileEntry::Incomplete { .. } => None,
+                })
+                .collect();
+
+            if let Ok(config_profiles) = crate::aws_config::list_all_config_profiles() {
+                for cp in config_profiles {
+                    if profiles_with_creds.contains(&cp.name) {
+                        continue;
+                    }
+                    if cp.sso_session.is_some() || cp.sso_account_id.is_some() {
+                        continue;
+                    }
+                    all_profiles.push(ProfileEntry::Incomplete {
+                        profile_name: cp.name,
+                        region: cp.region,
+                        output: cp.output,
+                    });
+                }
+            }
+
             // Sort profiles
             all_profiles.sort_by(|a, b| match (a, b) {
                 (ProfileEntry::Sso(a_status), ProfileEntry::Sso(b_status)) => a_status
@@ -3207,9 +3589,25 @@ impl App {
                         ..
                     },
                 ) => a_name.cmp(b_name),
-                // Sort SSO profiles before static profiles
-                (ProfileEntry::Sso(_), ProfileEntry::Static { .. }) => std::cmp::Ordering::Less,
-                (ProfileEntry::Static { .. }, ProfileEntry::Sso(_)) => std::cmp::Ordering::Greater,
+                (
+                    ProfileEntry::Incomplete {
+                        profile_name: a_name,
+                        ..
+                    },
+                    ProfileEntry::Incomplete {
+                        profile_name: b_name,
+                        ..
+                    },
+                ) => a_name.cmp(b_name),
+                // Sort order: SSO < Static < Incomplete
+                (ProfileEntry::Sso(_), _) => std::cmp::Ordering::Less,
+                (_, ProfileEntry::Sso(_)) => std::cmp::Ordering::Greater,
+                (ProfileEntry::Static { .. }, ProfileEntry::Incomplete { .. }) => {
+                    std::cmp::Ordering::Less
+                }
+                (ProfileEntry::Incomplete { .. }, ProfileEntry::Static { .. }) => {
+                    std::cmp::Ordering::Greater
+                }
             });
 
             self.accounts = all_profiles;
@@ -3267,6 +3665,114 @@ impl App {
         Ok(())
     }
 
+    /// View profile details for selected profile
+    fn view_profile_details(&mut self) {
+        if let Some(index) = self.accounts_list_state.selected() {
+            if let Some(profile_entry) = self.accounts.get(index) {
+                let mut details: Vec<(String, String)> = Vec::new();
+
+                match profile_entry {
+                    ProfileEntry::Sso(status) => {
+                        // Profile name
+                        if let Some(ref name) = status.profile_name {
+                            details.push(("Profile".to_string(), name.clone()));
+                        }
+
+                        // Account info
+                        details.push((
+                            "Account".to_string(),
+                            format!(
+                                "{} ({})",
+                                status.account_role.account_name, status.account_role.account_id
+                            ),
+                        ));
+                        details.push(("Role".to_string(), status.account_role.role_name.clone()));
+
+                        // Look up additional details from config
+                        if let Some(ref profile_name) = status.profile_name {
+                            if let Ok(Some(config_details)) =
+                                crate::aws_config::get_profile_details(profile_name)
+                            {
+                                if let Some(region) = config_details.region {
+                                    details.push(("Region".to_string(), region));
+                                }
+                                if let Some(output) = config_details.output {
+                                    details.push(("Output".to_string(), output));
+                                }
+                                if let Some(sso_session) = config_details.sso_session {
+                                    details.push(("SSO Session".to_string(), sso_session));
+                                }
+                            }
+                        }
+
+                        // Status
+                        if status.is_active {
+                            if let Some(exp) = status.expiration {
+                                let remaining = exp - chrono::Utc::now();
+                                let mins = remaining.num_minutes();
+                                details.push(("Status".to_string(), format!("Active ({}m)", mins)));
+                            } else {
+                                details.push(("Status".to_string(), "Active".to_string()));
+                            }
+                        } else {
+                            details.push(("Status".to_string(), "Inactive".to_string()));
+                        }
+
+                        if status.is_default {
+                            details.push(("Default".to_string(), "Yes".to_string()));
+                        }
+                    }
+                    ProfileEntry::Static {
+                        profile_name,
+                        is_default,
+                        ..
+                    } => {
+                        details.push(("Profile".to_string(), profile_name.clone()));
+                        details.push(("Type".to_string(), "Static credentials".to_string()));
+
+                        // Look up additional details from config
+                        if let Ok(Some(config_details)) =
+                            crate::aws_config::get_profile_details(profile_name)
+                        {
+                            if let Some(region) = config_details.region {
+                                details.push(("Region".to_string(), region));
+                            }
+                            if let Some(output) = config_details.output {
+                                details.push(("Output".to_string(), output));
+                            }
+                        }
+
+                        if *is_default {
+                            details.push(("Default".to_string(), "Yes".to_string()));
+                        }
+                    }
+                    ProfileEntry::Incomplete {
+                        profile_name,
+                        region,
+                        output,
+                    } => {
+                        details.push(("Profile".to_string(), profile_name.clone()));
+                        details.push((
+                            "Type".to_string(),
+                            "Incomplete (no credentials)".to_string(),
+                        ));
+
+                        if let Some(ref r) = region {
+                            details.push(("Region".to_string(), r.clone()));
+                        }
+                        if let Some(ref o) = output {
+                            details.push(("Output".to_string(), o.clone()));
+                        }
+
+                        details.push(("Status".to_string(), "No credentials".to_string()));
+                    }
+                }
+
+                self.state = AppState::ViewProfile { details };
+            }
+        }
+    }
+
     /// Open AWS Console in browser for selected role
     async fn open_console(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
@@ -3277,6 +3783,13 @@ impl App {
                     ProfileEntry::Static { .. } => {
                         self.status_message =
                             Some("Console access is only available for SSO profiles".to_string());
+                        return Ok(());
+                    }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        self.status_message = Some(format!(
+                            "Profile '{}' has no credentials. Cannot open console.",
+                            profile_name
+                        ));
                         return Ok(());
                     }
                 };
@@ -3354,6 +3867,7 @@ impl App {
             AppState::ConfirmationDialog { title, message } => {
                 self.draw_confirmation_dialog(f, title.clone(), message.clone())
             }
+            AppState::ViewProfile { details } => self.draw_view_profile_screen(f, details.clone()),
         }
     }
 
@@ -3495,6 +4009,23 @@ impl App {
                             Cell::new(Text::from("-").alignment(Alignment::Center)),
                         ])
                     }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        // Incomplete profiles have no credentials
+                        let status = "⚠";
+
+                        Row::new(vec![
+                            Cell::new(Text::from("CONFIG").alignment(Alignment::Center)),
+                            Cell::new(Text::from(status).alignment(Alignment::Center)),
+                            Cell::new(Text::from("").alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(Text::from("-").alignment(Alignment::Center)),
+                            Cell::new(
+                                Text::from(profile_name.clone()).alignment(Alignment::Center),
+                            ),
+                            Cell::new(Text::from("NO CREDS").alignment(Alignment::Center)),
+                        ])
+                    }
                 }
             })
             .collect();
@@ -3623,10 +4154,12 @@ impl App {
                 Span::raw(":filter | Profiles: "),
                 Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":edit "),
+                Span::styled("v", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":view "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":make default "),
+                Span::raw(":default "),
                 Span::styled("D", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":delete static "),
+                Span::raw(":delete "),
                 Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":console "),
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
@@ -3782,6 +4315,7 @@ impl App {
             Line::from(""),
             Line::from("Profiles Pane:"),
             Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
+            Line::from("  v           - View profile details"),
             Line::from("  e           - Edit profile (name, region, output) for selected role"),
             Line::from("  d           - Make selected profile the default"),
             Line::from("  c           - Open AWS Console in browser for selected profile"),
@@ -3801,6 +4335,46 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title("Help"))
             .style(Style::default().fg(Color::White));
         f.render_widget(help, f.area());
+    }
+
+    fn draw_view_profile_screen(&self, f: &mut Frame, details: Vec<(String, String)>) {
+        let mut lines: Vec<Line> = vec![
+            Line::from(Span::styled(
+                "Profile Details",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+
+        // Find max key length for alignment
+        let max_key_len = details.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+
+        // Add details
+        for (key, value) in details {
+            let padded_key = format!("{:>width$}", key, width = max_key_len);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}: ", padded_key),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(value, Style::default().fg(Color::White)),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Press any key to return",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let paragraph = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("View Profile"))
+            .style(Style::default().fg(Color::White));
+        f.render_widget(paragraph, f.area());
     }
 
     fn draw_loading_screen(&mut self, f: &mut Frame) {
