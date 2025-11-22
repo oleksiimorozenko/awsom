@@ -9,8 +9,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Run tests before releasing
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings -A dead_code
+
   create-release:
     name: Create Release
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
