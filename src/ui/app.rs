@@ -330,12 +330,23 @@ impl App {
             self.showing_cached_data = Some(cached);
         }
 
-        // Load all SSO sessions
+        // Load SSO sessions from disk (fast)
         self.load_all_sso_sessions().await;
 
-        // Load accounts for selected session if active
-        if self.sso_token.is_some() {
+        // Draw initial UI immediately so user sees something
+        terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
+
+        // Now load accounts from AWS API (can be slow)
+        // Only if we have SSO sessions AND an active token
+        if !self.sso_sessions.is_empty() && self.sso_token.is_some() {
+            // Show loading message with spinner
+            self.status_message = Some("Refreshing profile list...".to_string());
+            terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
+
             let _ = self.load_accounts().await;
+
+            // Clear status message after loading
+            self.status_message = None;
 
             // If we successfully loaded accounts from an active session,
             // default to Accounts pane for better UX
@@ -3368,8 +3379,22 @@ impl App {
             ])
             .split(f.area());
 
-        // Header
-        let header = Paragraph::new("awsom - AWS Organization Manager")
+        // Header with optional status message
+        let header_text = if let Some(ref msg) = self.status_message {
+            // Add spinner if message indicates loading
+            let spinner_frames: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let is_loading =
+                msg.contains("Loading") || msg.contains("Refreshing") || msg.contains("...");
+            if is_loading {
+                let spinner = spinner_frames[self.tick_count as usize % spinner_frames.len()];
+                format!("awsom - {} {}", spinner, msg)
+            } else {
+                format!("awsom - {}", msg)
+            }
+        } else {
+            "awsom - AWS Organization Manager".to_string()
+        };
+        let header = Paragraph::new(header_text)
             .style(
                 Style::default()
                     .fg(catppuccin_color(self.theme.colors.blue))
@@ -3509,19 +3534,19 @@ impl App {
             // Show filter status in title
             if self.active_pane == ActivePane::Accounts {
                 format!(
-                    "Accounts & Roles (*) [Filtered: {}]{}",
+                    "Profiles & Roles (*) [Filtered: {}]{}",
                     filtered, cache_indicator
                 )
             } else {
                 format!(
-                    "Accounts & Roles [Filtered: {}]{}",
+                    "Profiles & Roles [Filtered: {}]{}",
                     filtered, cache_indicator
                 )
             }
         } else if self.active_pane == ActivePane::Accounts {
-            format!("Accounts & Roles (*){}", cache_indicator)
+            format!("Profiles & Roles (*){}", cache_indicator)
         } else {
-            format!("Accounts & Roles{}", cache_indicator)
+            format!("Profiles & Roles{}", cache_indicator)
         };
 
         let table = Table::new(
@@ -3578,7 +3603,7 @@ impl App {
         // Make Enter key description context-aware
         let enter_action = match self.active_pane {
             ActivePane::Sessions => "Enter:login/logout session",
-            ActivePane::Accounts => "Enter:activate/deactivate credentials",
+            ActivePane::Accounts => "Enter:activate/deactivate profile",
         };
 
         let help_lines = vec![
@@ -3595,7 +3620,7 @@ impl App {
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":delete "),
                 Span::styled("f", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":filter | Accounts: "),
+                Span::raw(":filter | Profiles: "),
                 Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":edit "),
                 Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
@@ -3745,7 +3770,7 @@ impl App {
             )),
             Line::from(""),
             Line::from("Navigation:"),
-            Line::from("  Tab         - Switch between Sessions and Accounts panes"),
+            Line::from("  Tab         - Switch between Sessions and Profiles panes"),
             Line::from("  ↑, k        - Move selection up"),
             Line::from("  ↓, j        - Move selection down"),
             Line::from(""),
@@ -3755,12 +3780,12 @@ impl App {
             Line::from("  e           - Edit selected SSO session"),
             Line::from("  d           - Delete selected SSO session"),
             Line::from(""),
-            Line::from("Accounts Pane:"),
+            Line::from("Profiles Pane:"),
             Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
             Line::from("  e           - Edit profile (name, region, output) for selected role"),
-            Line::from("  d           - Make selected role's profile the default"),
-            Line::from("  c           - Open AWS Console in browser for selected role"),
-            Line::from("  r           - Refresh account/role list"),
+            Line::from("  d           - Make selected profile the default"),
+            Line::from("  c           - Open AWS Console in browser for selected profile"),
+            Line::from("  r           - Refresh profile list"),
             Line::from(""),
             Line::from("General:"),
             Line::from("  q, Esc      - Quit application"),
