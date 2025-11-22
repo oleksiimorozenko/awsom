@@ -1,5 +1,6 @@
 // Main TUI application
 use crate::auth::{AuthManager, DeviceAuthorizationInfo};
+use crate::cache::{self, CachedProfile, ProfileCache};
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance, SsoToken};
@@ -103,6 +104,8 @@ pub struct App {
     accounts_cache: std::collections::HashMap<String, Vec<AccountRole>>,
     /// Current session filter (if Some, show only this session's accounts)
     filtered_session: Option<String>,
+    /// Disk cache state (if Some, showing cached data with timestamp)
+    showing_cached_data: Option<ProfileCache>,
     /// Authentication manager
     auth_manager: AuthManager,
     /// Credential manager
@@ -153,6 +156,8 @@ pub struct App {
     last_auto_refresh: Option<std::time::Instant>,
     /// Catppuccin theme flavor
     theme: Flavor,
+    /// Animation tick counter (increments each frame)
+    tick_count: u64,
     /// Channel for receiving login results from background tasks
     login_rx: mpsc::UnboundedReceiver<LoginResult>,
     /// Sender for login tasks (kept to create clones for background tasks)
@@ -250,6 +255,7 @@ impl App {
             accounts_list_state: TableState::default(),
             accounts_cache: std::collections::HashMap::new(),
             filtered_session: None,
+            showing_cached_data: None,
             auth_manager,
             credential_manager,
             sso_instance: None,
@@ -281,6 +287,7 @@ impl App {
             static_input_cursor: 0,
             last_auto_refresh: None,
             theme: catppuccin::PALETTE.mocha,
+            tick_count: 0,
             login_rx,
             login_tx,
         })
@@ -311,6 +318,17 @@ impl App {
         execute!(stdout, EnterAlternateScreen).map_err(SsoError::Io)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(SsoError::Io)?;
+
+        // Try to load cached profiles first for instant display
+        if let Ok(Some(cached)) = cache::load_profiles() {
+            tracing::debug!(
+                "Loaded {} cached profiles ({})",
+                cached.profiles.len(),
+                cached.age_display()
+            );
+            self.load_profiles_from_cache(&cached);
+            self.showing_cached_data = Some(cached);
+        }
 
         // Load all SSO sessions
         self.load_all_sso_sessions().await;
@@ -348,6 +366,9 @@ impl App {
 
         loop {
             terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
+
+            // Increment tick counter for animations
+            self.tick_count = self.tick_count.wrapping_add(1);
 
             // Check for login results from background tasks
             while let Ok(result) = self.login_rx.try_recv() {
@@ -539,6 +560,21 @@ impl App {
                 ));
             }
             KeyCode::Char('r') => {
+                // Reload SSO sessions from disk first (picks up external auth changes)
+                let selected_idx = self.sessions_list_state.selected();
+                self.load_all_sso_sessions().await;
+                // Restore selection
+                if let Some(idx) = selected_idx {
+                    if idx < self.sso_sessions.len() {
+                        self.sessions_list_state.select(Some(idx));
+                        // Update sso_token from reloaded session
+                        if let Some(session) = self.sso_sessions.get(idx) {
+                            self.sso_token = session.token.clone();
+                            self.sso_instance = Some(session.instance.clone());
+                        }
+                    }
+                }
+
                 // Refresh account list (bypass cache)
                 if self.sso_token.is_some() {
                     // Clear cache for current session to force fresh fetch
@@ -552,9 +588,11 @@ impl App {
                     self.load_accounts().await?;
                     // Reset auto-refresh timer after manual refresh
                     self.last_auto_refresh = Some(std::time::Instant::now());
+                    self.status_message = Some("Refreshed sessions and accounts".to_string());
                 } else {
+                    // Still show that we refreshed sessions even if no token
                     self.status_message = Some(
-                        "Not logged in. Switch to Sessions pane (Tab) and press Enter to login."
+                        "Refreshed sessions. No active token - press Enter on a session to login."
                             .to_string(),
                     );
                 }
@@ -2739,6 +2777,68 @@ impl App {
         }
     }
 
+    /// Load profiles from disk cache (for instant startup display)
+    fn load_profiles_from_cache(&mut self, cache: &ProfileCache) {
+        self.accounts = cache
+            .profiles
+            .iter()
+            .map(|cached| {
+                ProfileEntry::Sso(AccountRoleWithStatus {
+                    account_role: cached.account_role.clone(),
+                    is_active: false, // Mark as inactive since we haven't verified
+                    expiration: None,
+                    is_default: cached.is_default,
+                    profile_name: Some(cached.profile_name.clone()),
+                })
+            })
+            .collect();
+
+        // Select first item if we have profiles
+        if !self.accounts.is_empty() {
+            self.accounts_list_state.select(Some(0));
+        }
+
+        tracing::debug!("Loaded {} profiles from disk cache", self.accounts.len());
+    }
+
+    /// Save current profiles to disk cache
+    fn save_profiles_to_cache(&self) {
+        let cached_profiles: Vec<CachedProfile> = self
+            .accounts
+            .iter()
+            .filter_map(|entry| {
+                match entry {
+                    ProfileEntry::Sso(status) => {
+                        // Get session name from current session or cache
+                        let session_name = self
+                            .get_selected_session()
+                            .map(|s| s.session_name.clone())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        Some(CachedProfile {
+                            profile_name: status.profile_name.clone().unwrap_or_else(|| {
+                                format!(
+                                    "{}/{}",
+                                    status.account_role.account_name, status.account_role.role_name
+                                )
+                            }),
+                            account_role: status.account_role.clone(),
+                            session_name,
+                            is_default: status.is_default,
+                        })
+                    }
+                    ProfileEntry::Static { .. } => None, // Don't cache static profiles
+                }
+            })
+            .collect();
+
+        if !cached_profiles.is_empty() {
+            if let Err(e) = cache::save_profiles(&cached_profiles) {
+                tracing::warn!("Failed to save profiles to cache: {}", e);
+            }
+        }
+    }
+
     async fn load_accounts(&mut self) -> Result<()> {
         // Determine which session's accounts to show
         // Priority: filtered_session > currently selected session
@@ -3018,6 +3118,10 @@ impl App {
                 "Loaded {} account/role combinations",
                 self.accounts.len()
             ));
+
+            // Save to disk cache and clear cached data flag (now showing fresh data)
+            self.save_profiles_to_cache();
+            self.showing_cached_data = None;
 
             // Select first item if none selected
             if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
@@ -3394,18 +3498,30 @@ impl App {
             Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
-        // Add asterisk to title if this pane is active, and show filter status
+        // Add asterisk to title if this pane is active, show filter/cache status
+        let cache_indicator = self
+            .showing_cached_data
+            .as_ref()
+            .map(|c| format!(" [cached: {}]", c.age_display()))
+            .unwrap_or_default();
+
         let accounts_title = if let Some(ref filtered) = self.filtered_session {
             // Show filter status in title
             if self.active_pane == ActivePane::Accounts {
-                format!("Accounts & Roles (*) [Filtered: {}]", filtered)
+                format!(
+                    "Accounts & Roles (*) [Filtered: {}]{}",
+                    filtered, cache_indicator
+                )
             } else {
-                format!("Accounts & Roles [Filtered: {}]", filtered)
+                format!(
+                    "Accounts & Roles [Filtered: {}]{}",
+                    filtered, cache_indicator
+                )
             }
         } else if self.active_pane == ActivePane::Accounts {
-            "Accounts & Roles (*)".to_string()
+            format!("Accounts & Roles (*){}", cache_indicator)
         } else {
-            "Accounts & Roles".to_string()
+            format!("Accounts & Roles{}", cache_indicator)
         };
 
         let table = Table::new(
@@ -3663,6 +3779,10 @@ impl App {
     }
 
     fn draw_loading_screen(&mut self, f: &mut Frame) {
+        // Spinner frames for animation (Braille pattern spinner)
+        const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let spinner_frame = SPINNER_FRAMES[self.tick_count as usize % SPINNER_FRAMES.len()];
+
         // Poll device_auth_info from Arc if available
         if let Some(ref arc) = self.device_auth_info_arc {
             if let Ok(guard) = arc.lock() {
@@ -3733,24 +3853,36 @@ impl App {
                 )));
             }
             loading_text.push(Line::from(""));
-            loading_text.push(Line::from(Span::styled(
-                "Waiting for authorization...",
-                Style::default().fg(Color::Gray),
-            )));
+            loading_text.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", spinner_frame),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    "Waiting for authorization...",
+                    Style::default().fg(Color::Gray),
+                ),
+            ]));
             loading_text.push(Line::from(""));
             loading_text.push(Line::from(Span::styled(
                 "Press 'q' or 'Esc' to cancel",
                 Style::default().fg(Color::Yellow),
             )));
         } else {
-            // Generic loading message
+            // Generic loading message with spinner
             loading_text.push(Line::from(""));
-            loading_text.push(Line::from(Span::styled(
-                "Loading...",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            loading_text.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", spinner_frame),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    "Loading...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
         }
 
         let loading = Paragraph::new(loading_text)
