@@ -1267,105 +1267,81 @@ impl App {
                         return Ok(());
                     }
 
-                    // Check if [default] profile exists and if it's user-managed
-                    match crate::aws_config::is_profile_in_awsom_section("default") {
-                        Ok(is_awsom_managed) => {
-                            if !is_awsom_managed {
-                                // Default profile exists and is user-created - show confirmation
-                                let mut message = vec![
-                                    "Profile [default] already exists (not managed by awsom)."
-                                        .to_string(),
-                                    "".to_string(),
-                                ];
+                    // Check if [default] profile already exists
+                    match crate::aws_config::get_profile_details("default") {
+                        Ok(Some(details)) => {
+                            // Default profile exists - show confirmation dialog
+                            let mut message = vec![
+                                "Profile [default] already exists.".to_string(),
+                                "".to_string(),
+                            ];
 
-                                // Get and display existing default profile details (compact format)
-                                if let Ok(Some(details)) =
-                                    crate::aws_config::get_profile_details("default")
-                                {
-                                    // Combine region and output on one line if both exist
-                                    let mut settings = Vec::new();
-                                    if let Some(region) = details.region {
-                                        settings.push(format!("region={}", region));
-                                    }
-                                    if let Some(output) = details.output {
-                                        settings.push(format!("output={}", output));
-                                    }
-                                    if !settings.is_empty() {
-                                        message.push(format!("Current: {}", settings.join(", ")));
-                                    }
+                            // Combine region and output on one line if both exist
+                            let mut settings = Vec::new();
+                            if let Some(region) = details.region {
+                                settings.push(format!("region={}", region));
+                            }
+                            if let Some(output) = details.output {
+                                settings.push(format!("output={}", output));
+                            }
+                            if !settings.is_empty() {
+                                message.push(format!("Current: {}", settings.join(", ")));
+                            }
 
-                                    // Show SSO details if present (compact)
-                                    if details.sso_session.is_some()
-                                        || details.sso_account_id.is_some()
-                                        || details.sso_role_name.is_some()
-                                    {
-                                        let mut sso_parts = Vec::new();
-                                        if let Some(session) = details.sso_session {
-                                            sso_parts.push(format!("session={}", session));
-                                        }
-                                        if let Some(account) = details.sso_account_id {
-                                            sso_parts.push(format!("account={}", account));
-                                        }
-                                        if let Some(role) = details.sso_role_name {
-                                            sso_parts.push(format!("role={}", role));
-                                        }
-                                        message.push(format!("SSO: {}", sso_parts.join(", ")));
-                                    }
-                                    message.push("".to_string());
+                            // Show SSO details if present (compact)
+                            if details.sso_session.is_some()
+                                || details.sso_account_id.is_some()
+                                || details.sso_role_name.is_some()
+                            {
+                                let mut sso_parts = Vec::new();
+                                if let Some(session) = details.sso_session {
+                                    sso_parts.push(format!("session={}", session));
                                 }
-
-                                message.push(format!("Replace with '{}'?", existing_profile));
-
-                                // Show confirmation dialog
-                                // Note: account field is unused in the handler, so we use a dummy for static profiles
-                                let account = account_opt.unwrap_or(AccountRole {
-                                    account_id: String::new(),
-                                    account_name: String::new(),
-                                    role_name: String::new(),
-                                });
-                                self.pending_confirm_action =
-                                    Some(ConfirmAction::MakeProfileDefault {
-                                        from_profile: existing_profile,
-                                        account,
-                                    });
-                                self.state = AppState::ConfirmationDialog {
-                                    title: "Replace [default] Profile".to_string(),
-                                    message,
-                                };
-                            } else {
-                                // Default profile is awsom-managed or doesn't exist - proceed directly
-                                tracing::info!(
-                                    "Deleting awsom-managed default profile before rename"
-                                );
-                                if let Err(e) = crate::aws_config::delete_profile("default") {
-                                    tracing::debug!(
-                                        "No existing default profile to delete (or error): {}",
-                                        e
-                                    );
+                                if let Some(account) = details.sso_account_id {
+                                    sso_parts.push(format!("account={}", account));
                                 }
+                                if let Some(role) = details.sso_role_name {
+                                    sso_parts.push(format!("role={}", role));
+                                }
+                                message.push(format!("SSO: {}", sso_parts.join(", ")));
+                            }
+                            message.push("".to_string());
+                            message.push(format!("Replace with '{}'?", existing_profile));
 
-                                // Rename the profile to default
-                                match crate::aws_config::rename_profile(
-                                    &existing_profile,
-                                    "default",
-                                ) {
-                                    Ok(()) => {
-                                        self.status_message = Some(format!(
-                                            "✓ Set '{}' as default profile",
-                                            existing_profile
-                                        ));
-                                        // Reload accounts to update indicators
-                                        if let Err(e) = self.load_accounts().await {
-                                            tracing::warn!(
-                                                "Failed to reload accounts after setting default: {}",
-                                                e
-                                            );
-                                        }
+                            // Show confirmation dialog
+                            let account = account_opt.unwrap_or(AccountRole {
+                                account_id: String::new(),
+                                account_name: String::new(),
+                                role_name: String::new(),
+                            });
+                            self.pending_confirm_action = Some(ConfirmAction::MakeProfileDefault {
+                                from_profile: existing_profile,
+                                account,
+                            });
+                            self.state = AppState::ConfirmationDialog {
+                                title: "Replace [default] Profile".to_string(),
+                                message,
+                            };
+                        }
+                        Ok(None) => {
+                            // No default profile - proceed directly
+                            match crate::aws_config::rename_profile(&existing_profile, "default") {
+                                Ok(()) => {
+                                    self.status_message = Some(format!(
+                                        "✓ Set '{}' as default profile",
+                                        existing_profile
+                                    ));
+                                    // Reload accounts to update indicators
+                                    if let Err(e) = self.load_accounts().await {
+                                        tracing::warn!(
+                                            "Failed to reload accounts after setting default: {}",
+                                            e
+                                        );
                                     }
-                                    Err(e) => {
-                                        self.status_message =
-                                            Some(format!("Error setting default profile: {}", e));
-                                    }
+                                }
+                                Err(e) => {
+                                    self.status_message =
+                                        Some(format!("Error setting default profile: {}", e));
                                 }
                             }
                         }
