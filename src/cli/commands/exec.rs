@@ -19,16 +19,16 @@ pub async fn execute(
     }
 
     // Resolve SSO session using the new 4-level priority logic
-    let (start_url, region) = aws_config::resolve_sso_session(
+    let (resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         start_url.as_deref(),
         region.as_deref(),
     )?;
 
     let instance = SsoInstance {
+        session_name: resolved_session_name,
         start_url,
         region,
-        session_name: None,
     };
 
     // Get SSO token

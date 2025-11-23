@@ -221,7 +221,7 @@ async fn switch_session(name: String) -> Result<()> {
 
 async fn session_login(session_name: Option<String>, force: bool, headless: bool) -> Result<()> {
     // Resolve session using the new resolution logic
-    let (start_url, region) = aws_config::resolve_sso_session(
+    let (_resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         None, // No explicit start_url
         None, // No explicit region
@@ -233,7 +233,7 @@ async fn session_login(session_name: Option<String>, force: bool, headless: bool
 
 async fn session_logout(session_name: Option<String>) -> Result<()> {
     // Resolve session using the new resolution logic
-    let (start_url, region) = aws_config::resolve_sso_session(
+    let (_resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         None, // No explicit start_url
         None, // No explicit region
@@ -245,13 +245,12 @@ async fn session_logout(session_name: Option<String>) -> Result<()> {
 
 async fn session_status(session_name: Option<String>, json: bool) -> Result<()> {
     // Resolve session using the new resolution logic
-    let (_start_url, _region) = aws_config::resolve_sso_session(
+    let (resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         None, // No explicit start_url
         None, // No explicit region
     )?;
 
-    // Call the existing status command implementation
-    // Note: status command currently doesn't use session info, but we resolve it for consistency
-    crate::cli::commands::status::execute(json).await
+    // Call the status command with resolved session info
+    crate::cli::commands::status::execute(resolved_session_name, start_url, region, json).await
 }

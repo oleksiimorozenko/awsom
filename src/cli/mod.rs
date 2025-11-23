@@ -43,23 +43,6 @@ pub enum Commands {
         command: ProfileCommands,
     },
 
-    /// Import profiles or SSO sessions from user-managed section to awsom management
-    ///
-    /// Moves sections from above the "Managed by awsom" marker to below it,
-    /// allowing awsom to manage them with automatic sorting and organization.
-    Import {
-        /// Profile or SSO session name to import
-        name: String,
-
-        /// Type of section to import (profile or sso-session)
-        #[arg(short, long, default_value = "profile")]
-        section_type: String,
-
-        /// Force import without confirmation
-        #[arg(short, long)]
-        force: bool,
-    },
-
     /// Generate shell completion scripts
     ///
     /// Generates shell completion scripts for awsom commands.
@@ -250,6 +233,10 @@ pub enum ProfileCommands {
 
     /// Open AWS Console in browser for a role
     Console {
+        /// Profile name (reads account/role from config)
+        #[arg(long)]
+        profile: Option<String>,
+
         /// Account ID
         #[arg(long)]
         account_id: Option<String>,
@@ -258,9 +245,9 @@ pub enum ProfileCommands {
         #[arg(long)]
         account_name: Option<String>,
 
-        /// Role name
+        /// Role name (required unless --profile is used)
         #[arg(long)]
-        role_name: String,
+        role_name: Option<String>,
 
         /// SSO session name (auto-resolved if only one exists)
         #[arg(long)]
@@ -290,11 +277,6 @@ pub async fn execute(args: Cli) -> Result<()> {
         Some(Commands::Profile { command }) => {
             commands::profile::execute(command, args.start_url, args.region).await
         }
-        Some(Commands::Import {
-            name,
-            section_type,
-            force,
-        }) => commands::import::execute(name, section_type, force).await,
         Some(Commands::Completions {
             shell,
             show_install,

@@ -471,11 +471,12 @@ pub fn read_all_sso_sessions() -> Result<Vec<SsoSession>> {
 /// 4. Single configured session (if only one exists) - check config
 ///
 /// Returns (start_url, region) tuple or error with helpful message
+/// Returns (session_name, start_url, region)
 pub fn resolve_sso_session(
     session_name: Option<&str>,
     start_url: Option<&str>,
     region: Option<&str>,
-) -> Result<(String, String)> {
+) -> Result<(Option<String>, String, String)> {
     // Level 1: Explicit flags (both start_url and region must be provided)
     if let (Some(url), Some(reg)) = (start_url, region) {
         tracing::debug!(
@@ -483,7 +484,7 @@ pub fn resolve_sso_session(
             url,
             reg
         );
-        return Ok((url.to_string(), reg.to_string()));
+        return Ok((None, url.to_string(), reg.to_string()));
     }
 
     // If only one flag is provided, that's an error
@@ -503,7 +504,11 @@ pub fn resolve_sso_session(
                 session.sso_start_url,
                 session.sso_region
             );
-            return Ok((session.sso_start_url.clone(), session.sso_region.clone()));
+            return Ok((
+                Some(session.session_name.clone()),
+                session.sso_start_url.clone(),
+                session.sso_region.clone(),
+            ));
         } else {
             return Err(SsoError::ConfigError(format!(
                 "Session '{}' not found in ~/.aws/config",
@@ -532,7 +537,11 @@ pub fn resolve_sso_session(
                 session.sso_start_url,
                 session.sso_region
             );
-            Ok((session.sso_start_url.clone(), session.sso_region.clone()))
+            Ok((
+                Some(session.session_name.clone()),
+                session.sso_start_url.clone(),
+                session.sso_region.clone(),
+            ))
         }
         _ => {
             let session_list = sessions

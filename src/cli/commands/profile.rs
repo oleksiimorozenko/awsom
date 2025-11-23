@@ -50,6 +50,7 @@ pub async fn execute(
             .await
         }
         ProfileCommands::Console {
+            profile,
             account_id,
             account_name,
             role_name,
@@ -57,6 +58,7 @@ pub async fn execute(
             region: console_region,
         } => {
             crate::cli::commands::console::execute(
+                profile,
                 account_id,
                 account_name,
                 role_name,
@@ -118,7 +120,8 @@ async fn profile_start(profile_name: String) -> Result<()> {
     println!();
 
     // Step 3: Resolve SSO session to get start_url and region
-    let (start_url, sso_region) = aws_config::resolve_sso_session(Some(&sso_session), None, None)?;
+    let (_resolved_session_name, start_url, sso_region) =
+        aws_config::resolve_sso_session(Some(&sso_session), None, None)?;
 
     // Step 4: Get SSO token
     let token_cache = crate::auth::TokenCache::new()?;

@@ -275,15 +275,20 @@ Options:
 #### `profile console` - Open AWS Console in browser
 
 ```bash
+# Using an existing profile
+awsom profile console --profile staging
+
+# Or specify account/role directly
 awsom profile console --role-name Developer --account-name Production
 ```
 
 Opens the AWS Console in your default browser using federated sign-in with temporary credentials.
 
 Options:
+- `--profile <NAME>`: Use an existing SSO profile (reads account/role from config)
 - `--account-id <ID>`: Account ID
 - `--account-name <NAME>`: Account name (alternative to account-id)
-- `--role-name <ROLE>`: Role name
+- `--role-name <ROLE>`: Role name (required unless --profile is used)
 - `--region <REGION>`: AWS region to open console in (defaults to profile default or SSO region)
 
 ### `session` - Manage SSO sessions

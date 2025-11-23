@@ -4,24 +4,62 @@ use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::SsoInstance;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
+    profile: Option<String>,
     account_id: Option<String>,
     account_name: Option<String>,
-    role_name: String,
+    role_name: Option<String>,
     session_name: Option<String>,
     sso_start_url: Option<String>,
     sso_region: Option<String>,
     console_region: Option<String>,
 ) -> Result<()> {
+    // If --profile is provided, look up details from config
+    let (account_id, role_name, session_name, console_region) = if let Some(profile_name) = profile
+    {
+        // Read profile details from config
+        let details = aws_config::get_profile_details(&profile_name)?.ok_or_else(|| {
+            SsoError::InvalidConfig(format!("Profile '{}' not found", profile_name))
+        })?;
+
+        let account_id = details.sso_account_id.ok_or_else(|| {
+            SsoError::InvalidConfig(format!(
+                "Profile '{}' has no sso_account_id. This command only works with SSO profiles.",
+                profile_name
+            ))
+        })?;
+
+        let role_name = details.sso_role_name.ok_or_else(|| {
+            SsoError::InvalidConfig(format!(
+                "Profile '{}' has no sso_role_name. This command only works with SSO profiles.",
+                profile_name
+            ))
+        })?;
+
+        // Use profile's sso_session if not overridden
+        let session = session_name.or(details.sso_session);
+        // Use profile's region for console if not overridden
+        let region = console_region.or(details.region);
+
+        (Some(account_id), role_name, session, region)
+    } else {
+        // Require role_name when not using --profile
+        let role_name = role_name.ok_or_else(|| {
+            SsoError::InvalidConfig("Either --profile or --role-name is required".to_string())
+        })?;
+        (account_id, role_name, session_name, console_region)
+    };
+
     // Resolve SSO session using the new 4-level priority logic
-    let (start_url, sso_region) = aws_config::resolve_sso_session(
+    let (resolved_session_name, start_url, sso_region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         sso_start_url.as_deref(),
         sso_region.as_deref(),
     )?;
 
     let instance = SsoInstance {
-        session_name: None,
+        session_name: resolved_session_name,
         start_url,
         region: sso_region,
     };
@@ -53,7 +91,7 @@ pub async fn execute(
             .ok_or_else(|| SsoError::InvalidConfig(format!("Account '{}' not found", name)))?
     } else {
         return Err(SsoError::InvalidConfig(
-            "Either --account-id or --account-name is required".to_string(),
+            "Either --account-id, --account-name, or --profile is required".to_string(),
         ));
     };
 
