@@ -26,70 +26,14 @@ use std::collections::HashMap;
 use std::io;
 use tokio::sync::mpsc;
 
-/// Message type for background login tasks
-enum LoginResult {
-    Success {
-        session_index: usize,
-        token: SsoToken,
-        instance: SsoInstance,
-        session_name: String,
-    },
-    Error {
-        message: String,
-    },
-    Cancelled,
-}
-
-/// Convert Catppuccin color to Ratatui Color
-fn catppuccin_color(color: catppuccin::Color) -> Color {
-    Color::Rgb(color.rgb.r, color.rgb.g, color.rgb.b)
-}
-
-/// Wrapper for AccountRole with active status
-#[derive(Debug, Clone)]
-struct AccountRoleWithStatus {
-    account_role: AccountRole,
-    is_active: bool,
-    expiration: Option<chrono::DateTime<chrono::Utc>>,
-    is_default: bool,
-    profile_name: Option<String>,
-}
-
-/// Profile entry that can be either SSO or static credentials
-#[derive(Debug, Clone)]
-enum ProfileEntry {
-    Sso(AccountRoleWithStatus),
-    Static {
-        profile_name: String,
-        is_default: bool,
-        credentials: crate::models::StaticCredentials,
-    },
-    /// Profile defined in config but without credentials
-    Incomplete {
-        profile_name: String,
-        region: Option<String>,
-        output: Option<String>,
-    },
-}
-
-/// SSO Session with its status
-#[derive(Debug, Clone)]
-struct SsoSessionInfo {
-    session_name: String,
-    start_url: String,
-    region: String,
-    is_active: bool,
-    token_expiration: Option<chrono::DateTime<chrono::Utc>>,
-    instance: SsoInstance,
-    token: Option<SsoToken>,
-}
-
-/// Active pane in two-pane layout
-#[derive(Debug, Clone, PartialEq)]
-enum ActivePane {
-    Sessions,
-    Accounts,
-}
+// Re-export types from extracted modules
+use super::state::{
+    AppState, DefaultsConfigStep, NewProfileConfigStep, SsoConfigStep, StaticCredentialStep,
+};
+use super::theme::catppuccin_color;
+use super::types::{
+    AccountRoleWithStatus, ActivePane, ConfirmAction, LoginResult, ProfileEntry, SsoSessionInfo,
+};
 
 pub struct App {
     /// Whether the app should quit
@@ -170,81 +114,6 @@ pub struct App {
     login_rx: mpsc::UnboundedReceiver<LoginResult>,
     /// Sender for login tasks (kept to create clones for background tasks)
     login_tx: mpsc::UnboundedSender<LoginResult>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum AppState {
-    /// Main screen showing account/role list
-    Main,
-    /// Help screen
-    Help,
-    /// Loading state
-    Loading,
-    /// Error state
-    Error(String),
-    /// Profile name input
-    ProfileInput,
-    /// SSO configuration input
-    SsoConfigInput { step: SsoConfigStep },
-    /// Default profile configuration input
-    DefaultsConfigInput { step: DefaultsConfigStep },
-    /// New profile configuration input (with region and output)
-    NewProfileConfigInput { step: NewProfileConfigStep },
-    /// Static credential input (for creating/editing static profiles)
-    StaticCredentialInput { step: StaticCredentialStep },
-    /// Confirmation dialog
-    ConfirmationDialog { title: String, message: Vec<String> },
-    /// View profile details
-    ViewProfile { details: Vec<(String, String)> },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum StaticCredentialStep {
-    ProfileName,
-    AccessKeyId,
-    SecretAccessKey,
-    SessionToken, // Optional
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum SsoConfigStep {
-    StartUrl,
-    Region,
-    SessionName,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum DefaultsConfigStep {
-    Region,
-    Output,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum NewProfileConfigStep {
-    ProfileName,
-    Region,
-    Output,
-}
-
-/// Action to perform when user confirms in confirmation dialog
-#[derive(Debug, Clone)]
-enum ConfirmAction {
-    /// Make a profile the default profile
-    MakeProfileDefault {
-        from_profile: String,
-        account: AccountRole,
-    },
-    /// Rename/overwrite a profile
-    RenameProfile {
-        old_name: String,
-        new_name: String,
-        account: AccountRole,
-    },
-    /// Delete an SSO session
-    DeleteSession {
-        session_index: usize,
-        session_name: String,
-    },
 }
 
 impl App {
