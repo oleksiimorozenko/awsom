@@ -78,6 +78,7 @@ impl SsoToken {
 }
 
 /// Represents an AWS account available through SSO
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AwsAccount {
     pub account_id: String,
@@ -93,10 +94,12 @@ pub struct AccountRole {
 }
 
 impl AccountRole {
+    #[allow(dead_code)]
     pub fn display_name(&self) -> String {
         format!("{}/{}", self.account_name, self.role_name)
     }
 
+    #[allow(dead_code)]
     pub fn full_display(&self) -> String {
         format!(
             "{} ({}): {}",
@@ -139,6 +142,7 @@ impl StaticCredentials {
     }
 
     /// Check if this includes a session token (temporary credentials)
+    #[allow(dead_code)]
     pub fn is_temporary(&self) -> bool {
         self.session_token.is_some()
     }
@@ -154,6 +158,7 @@ pub struct RoleCredentials {
 }
 
 impl RoleCredentials {
+    #[allow(dead_code)]
     pub fn is_expired(&self) -> bool {
         Utc::now() >= self.expiration
     }
@@ -186,6 +191,7 @@ impl RoleCredentials {
 }
 
 /// Represents an active profile session
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProfileSession {
     pub profile_name: String,
@@ -195,6 +201,7 @@ pub struct ProfileSession {
     pub sso_instance: SsoInstance,
 }
 
+#[allow(dead_code)]
 impl ProfileSession {
     pub fn is_active(&self) -> bool {
         self.credentials
@@ -213,6 +220,7 @@ impl ProfileSession {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
     Active,
@@ -221,6 +229,7 @@ pub enum SessionStatus {
     Inactive,
 }
 
+#[allow(dead_code)]
 impl SessionStatus {
     pub fn as_str(&self) -> &str {
         match self {

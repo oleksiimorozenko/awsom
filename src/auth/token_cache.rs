@@ -95,6 +95,7 @@ impl TokenCache {
     }
 
     /// List all cached tokens
+    #[allow(dead_code)]
     pub fn list_tokens(&self) -> Result<Vec<(String, SsoToken)>> {
         let mut tokens = Vec::new();
 

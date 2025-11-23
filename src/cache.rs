@@ -42,6 +42,7 @@ impl ProfileCache {
     }
 
     /// Check if cache is stale (older than threshold)
+    #[allow(dead_code)]
     pub fn is_stale(&self, max_age_seconds: i64) -> bool {
         let age = Utc::now() - self.cached_at;
         age.num_seconds() > max_age_seconds
@@ -160,6 +161,7 @@ pub fn load_profiles() -> Result<Option<ProfileCache>> {
 }
 
 /// Clear the profile cache
+#[allow(dead_code)]
 pub fn clear_cache() -> Result<()> {
     let cache_file = cache_file_path()?;
 

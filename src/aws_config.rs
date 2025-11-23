@@ -119,12 +119,6 @@ fn is_marker_line(line: &str) -> bool {
         || trimmed == USER_MANAGED_COMMENT
 }
 
-/// Check if a line is the awsom managed marker (starts the awsom section)
-fn is_awsom_managed_marker(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed == AWSOM_MANAGED_MARKER || trimmed == AWSOM_MANAGED_COMMENT
-}
-
 /// Legacy function - now just passes content through unchanged
 /// Section markers are no longer used; all profiles are treated equally
 pub fn ensure_markers(content: &str) -> String {
@@ -219,15 +213,6 @@ fn split_into_sections(content: &str) -> (String, String, String) {
 
     // Return all content in user_section, awsom_section is empty (no longer used)
     (header, main_content, String::new())
-}
-
-/// Split config content into sections (public for import command)
-/// Returns (all_content, empty_string) tuple
-/// Note: Section markers are no longer used - returns all content as first element
-pub fn split_by_marker(content: &str) -> (String, String) {
-    // Strip any legacy markers and return all content
-    let clean_content = ensure_markers(content);
-    (clean_content, String::new())
 }
 
 /// SSO Session configuration
@@ -566,6 +551,7 @@ pub struct DefaultConfig {
 }
 
 /// Read [default] section from ~/.aws/config
+#[allow(dead_code)]
 pub fn read_default_config() -> Result<Option<DefaultConfig>> {
     let config_path = config_file_path()?;
 
@@ -741,6 +727,7 @@ pub fn write_awsom_defaults(config: &DefaultConfig) -> Result<()> {
 
 /// Check if a profile exists in the config file
 /// Note: Section markers are no longer used - all profiles are treated equally
+#[allow(dead_code)]
 pub fn is_profile_in_awsom_section(profile_name: &str) -> Result<bool> {
     let config_path = config_file_path()?;
 
@@ -1049,6 +1036,7 @@ pub fn list_all_config_profiles() -> Result<Vec<ConfigProfile>> {
 }
 
 /// Write [default] section to ~/.aws/config
+#[allow(dead_code)]
 pub fn write_default_config(config: &DefaultConfig) -> Result<()> {
     let config_path = config_file_path()?;
     let aws_dir = config_path
@@ -1518,6 +1506,7 @@ pub fn write_credentials_with_metadata(
 
 /// Check if a profile exists in the user-managed section
 /// Returns true if the profile name exists above the marker
+#[allow(dead_code)]
 fn profile_exists_in_user_section(profile_name: &str) -> Result<bool> {
     let config_path = config_file_path()?;
 
@@ -1528,11 +1517,8 @@ fn profile_exists_in_user_section(profile_name: &str) -> Result<bool> {
     let content = fs::read_to_string(&config_path)
         .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
 
-    // Ensure markers exist
-    let content_with_markers = ensure_markers(&content);
-
-    // Split into user-managed and awsom-managed sections
-    let (user_section, _) = split_by_marker(&content_with_markers);
+    // Clean up any legacy markers and get content
+    let user_section = ensure_markers(&content);
 
     // Parse profiles from user section
     let (default_config, profiles) = parse_profiles_from_content(&user_section);
@@ -1921,11 +1907,13 @@ fn update_ini_section_with_comments(
 }
 
 /// Update or add a section in an INI-style file
+#[allow(dead_code)]
 fn update_ini_section(content: &str, section_name: &str, key_values: &[(&str, &str)]) -> String {
     update_ini_section_with_comments(content, section_name, key_values, None)
 }
 
 /// Get all profile names from ~/.aws/credentials
+#[allow(dead_code)]
 pub fn list_profiles() -> Result<Vec<String>> {
     let creds_path = credentials_file_path()?;
 
@@ -2173,6 +2161,7 @@ fn get_profile_from_credentials(account_id: &str, role_name: &str) -> Result<Opt
 }
 
 /// Check if a role has active credentials in AWS config
+#[allow(dead_code)]
 pub fn get_profile_for_role(account: &AccountRole) -> Result<Option<ProfileStatus>> {
     let creds_path = credentials_file_path()?;
 
@@ -2218,6 +2207,7 @@ pub fn get_profile_for_role(account: &AccountRole) -> Result<Option<ProfileStatu
     Ok(None)
 }
 
+#[allow(dead_code)]
 fn check_profile_match(
     profile_name: &str,
     data: &HashMap<String, String>,

@@ -181,12 +181,14 @@ impl App {
     }
 
     /// Get the currently selected SSO session's token
+    #[allow(dead_code)]
     fn get_current_token(&self) -> Option<&SsoToken> {
         self.get_selected_session()
             .and_then(|session| session.token.as_ref())
     }
 
     /// Get the currently selected SSO session's instance
+    #[allow(dead_code)]
     fn get_current_instance(&self) -> Option<&SsoInstance> {
         self.get_selected_session().map(|session| &session.instance)
     }
@@ -2472,6 +2474,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn login(&mut self) -> Result<()> {
         // Check if SSO config is available
         if !sso_config::has_sso_config(None, None) {
@@ -2557,6 +2560,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn logout(&mut self) -> Result<()> {
         if let Some(ref instance) = self.sso_instance {
             // Remove cached token
@@ -2650,6 +2654,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     async fn load_sso_session(&mut self) {
         self.status_message = Some("Checking for existing SSO session...".to_string());
 
@@ -3490,6 +3495,7 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn get_credentials_for_role(&mut self, account: &AccountRole) -> Result<()> {
         if let (Some(ref token), Some(ref instance)) = (&self.sso_token, &self.sso_instance) {
             self.status_message = Some(format!(

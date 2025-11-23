@@ -50,6 +50,7 @@ pub fn get_sso_config(
 }
 
 /// Check if SSO configuration is available from any source
+#[allow(dead_code)]
 pub fn has_sso_config(start_url_arg: Option<&String>, region_arg: Option<&String>) -> bool {
     // Check CLI args
     if start_url_arg.is_some() && region_arg.is_some() {
@@ -67,6 +68,7 @@ pub fn has_sso_config(start_url_arg: Option<&String>, region_arg: Option<&String
 
 /// Prompt user for SSO configuration and write to ~/.aws/config
 /// Returns (start_url, region, session_name)
+#[allow(dead_code)]
 pub fn prompt_sso_config() -> Result<(String, String, String)> {
     use std::io::{self, Write};
 

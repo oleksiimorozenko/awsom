@@ -10,6 +10,7 @@ use crate::models::{AccountRole, RoleCredentials, SsoInstance, SsoToken};
 
 /// High-level credential management
 pub struct CredentialManager {
+    #[allow(dead_code)]
     cache: CredentialCache,
 }
 
@@ -21,6 +22,7 @@ impl CredentialManager {
     }
 
     /// Get credentials for a role, fetching if necessary
+    #[allow(dead_code)]
     pub async fn get_credentials(
         &self,
         instance: &SsoInstance,
@@ -82,11 +84,13 @@ impl CredentialManager {
     }
 
     /// Clear cached credentials for a role
+    #[allow(dead_code)]
     pub fn clear_credentials(&self, instance: &SsoInstance, role: &AccountRole) -> Result<()> {
         self.cache.remove_credentials(instance, role)
     }
 
     /// Clear all cached credentials
+    #[allow(dead_code)]
     pub fn clear_all(&self) -> Result<()> {
         self.cache.clear_all()
     }

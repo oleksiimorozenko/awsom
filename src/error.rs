@@ -8,6 +8,7 @@ pub enum SsoError {
     #[error("Authentication failed: {0}")]
     AuthenticationFailed(String),
 
+    #[allow(dead_code)]
     #[error("Authorization pending - user must complete device flow")]
     AuthorizationPending,
 
@@ -38,6 +39,7 @@ pub enum SsoError {
     #[error("No SSO session found")]
     NoSessionFound,
 
+    #[allow(dead_code)]
     #[error("Account or role not found")]
     AccountRoleNotFound,
 

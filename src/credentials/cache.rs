@@ -1,3 +1,6 @@
+// Credential caching layer - kept for future use but currently bypassed
+#![allow(dead_code)]
+
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, RoleCredentials, SsoInstance};
 use sha1::{Digest, Sha1};
