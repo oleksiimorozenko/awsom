@@ -44,8 +44,5 @@ impl SessionManager {
     }
 }
 
-impl Default for SessionManager {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize SessionManager")
-    }
-}
+// Note: Default intentionally not implemented to avoid panics.
+// Use SessionManager::new() which returns Result for proper error handling.

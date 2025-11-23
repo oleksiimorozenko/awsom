@@ -2539,26 +2539,27 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
                     && profile_data.contains_key("aws_secret_access_key")
                     && profile_data.contains_key("aws_session_token");
 
-                let has_static_creds = profile_data.contains_key("aws_access_key_id")
-                    && profile_data.contains_key("aws_secret_access_key")
-                    && !profile_data.contains_key("aws_session_token");
-
                 let (has_credentials, credential_type, static_credentials) = if has_sso_creds {
                     (true, crate::models::CredentialType::Sso, None)
-                } else if has_static_creds {
-                    let static_creds = crate::models::StaticCredentials {
-                        access_key_id: profile_data.get("aws_access_key_id").unwrap().clone(),
-                        secret_access_key: profile_data
-                            .get("aws_secret_access_key")
-                            .unwrap()
-                            .clone(),
-                        session_token: None,
-                    };
-                    (
-                        true,
-                        crate::models::CredentialType::Static,
-                        Some(static_creds),
-                    )
+                } else if let (Some(access_key), Some(secret_key)) = (
+                    profile_data.get("aws_access_key_id"),
+                    profile_data.get("aws_secret_access_key"),
+                ) {
+                    // Only create static creds if no session_token (otherwise it's SSO)
+                    if !profile_data.contains_key("aws_session_token") {
+                        let static_creds = crate::models::StaticCredentials {
+                            access_key_id: access_key.clone(),
+                            secret_access_key: secret_key.clone(),
+                            session_token: None,
+                        };
+                        (
+                            true,
+                            crate::models::CredentialType::Static,
+                            Some(static_creds),
+                        )
+                    } else {
+                        (false, crate::models::CredentialType::Sso, None)
+                    }
                 } else {
                     (false, crate::models::CredentialType::Sso, None)
                 };
@@ -2614,23 +2615,27 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
             && profile_data.contains_key("aws_secret_access_key")
             && profile_data.contains_key("aws_session_token");
 
-        let has_static_creds = profile_data.contains_key("aws_access_key_id")
-            && profile_data.contains_key("aws_secret_access_key")
-            && !profile_data.contains_key("aws_session_token");
-
         let (has_credentials, credential_type, static_credentials) = if has_sso_creds {
             (true, crate::models::CredentialType::Sso, None)
-        } else if has_static_creds {
-            let static_creds = crate::models::StaticCredentials {
-                access_key_id: profile_data.get("aws_access_key_id").unwrap().clone(),
-                secret_access_key: profile_data.get("aws_secret_access_key").unwrap().clone(),
-                session_token: None,
-            };
-            (
-                true,
-                crate::models::CredentialType::Static,
-                Some(static_creds),
-            )
+        } else if let (Some(access_key), Some(secret_key)) = (
+            profile_data.get("aws_access_key_id"),
+            profile_data.get("aws_secret_access_key"),
+        ) {
+            // Only create static creds if no session_token (otherwise it's SSO)
+            if !profile_data.contains_key("aws_session_token") {
+                let static_creds = crate::models::StaticCredentials {
+                    access_key_id: access_key.clone(),
+                    secret_access_key: secret_key.clone(),
+                    session_token: None,
+                };
+                (
+                    true,
+                    crate::models::CredentialType::Static,
+                    Some(static_creds),
+                )
+            } else {
+                (false, crate::models::CredentialType::Sso, None)
+            }
         } else {
             (false, crate::models::CredentialType::Sso, None)
         };

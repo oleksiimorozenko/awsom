@@ -50,21 +50,34 @@ async fn main() -> Result<()> {
 
         let log_file = log_dir.join("awsom.log");
 
-        // Open log file in append mode
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file)
-            .expect("Failed to open log file");
-
-        // Initialize tracing to write to file
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env().add_directive(log_level.into()),
-            )
-            .with_writer(file.with_max_level(tracing::Level::TRACE))
-            .with_ansi(false) // No color codes in file
-            .init();
+        // Open log file in append mode, with fallback to stderr if it fails
+        match OpenOptions::new().create(true).append(true).open(&log_file) {
+            Ok(file) => {
+                // Initialize tracing to write to file
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::from_default_env()
+                            .add_directive(log_level.into()),
+                    )
+                    .with_writer(file.with_max_level(tracing::Level::TRACE))
+                    .with_ansi(false) // No color codes in file
+                    .init();
+            }
+            Err(_) => {
+                // Fallback: log to stderr if log file can't be created
+                // This may interfere with TUI, but it's better than panicking
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::from_default_env()
+                            .add_directive(log_level.into()),
+                    )
+                    .init();
+                tracing::warn!(
+                    "Could not open log file at {:?}, logging to stderr",
+                    log_file
+                );
+            }
+        }
     } else {
         // For CLI commands, write logs to stderr as usual
         tracing_subscriber::fmt()

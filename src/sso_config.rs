@@ -75,9 +75,13 @@ pub fn prompt_sso_config() -> Result<(String, String, String)> {
     println!("Please provide your AWS SSO details:\n");
 
     print!("SSO Start URL (e.g., https://my-org.awsapps.com/start): ");
-    io::stdout().flush().unwrap();
+    io::stdout()
+        .flush()
+        .map_err(|e| SsoError::ConfigError(format!("Failed to flush stdout: {}", e)))?;
     let mut start_url = String::new();
-    io::stdin().read_line(&mut start_url).unwrap();
+    io::stdin()
+        .read_line(&mut start_url)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read input: {}", e)))?;
     let start_url = start_url.trim().to_string();
 
     if start_url.is_empty() {
@@ -87,9 +91,13 @@ pub fn prompt_sso_config() -> Result<(String, String, String)> {
     }
 
     print!("SSO Region (e.g., us-east-1): ");
-    io::stdout().flush().unwrap();
+    io::stdout()
+        .flush()
+        .map_err(|e| SsoError::ConfigError(format!("Failed to flush stdout: {}", e)))?;
     let mut region = String::new();
-    io::stdin().read_line(&mut region).unwrap();
+    io::stdin()
+        .read_line(&mut region)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read input: {}", e)))?;
     let region = region.trim().to_string();
 
     if region.is_empty() {
@@ -97,9 +105,13 @@ pub fn prompt_sso_config() -> Result<(String, String, String)> {
     }
 
     print!("SSO Session Name (default: default-sso): ");
-    io::stdout().flush().unwrap();
+    io::stdout()
+        .flush()
+        .map_err(|e| SsoError::ConfigError(format!("Failed to flush stdout: {}", e)))?;
     let mut session_name = String::new();
-    io::stdin().read_line(&mut session_name).unwrap();
+    io::stdin()
+        .read_line(&mut session_name)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read input: {}", e)))?;
     let session_name = session_name.trim();
     let session_name = if session_name.is_empty() {
         "default-sso".to_string()
