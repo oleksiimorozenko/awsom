@@ -115,7 +115,7 @@ pub fn prompt_sso_config() -> Result<(String, String, String)> {
         sso_registration_scopes: "sso:account:access".to_string(),
     };
 
-    write_sso_session(&session)?;
+    write_sso_session(&session, None)?;
 
     println!("\n✓ SSO configuration saved to ~/.aws/config");
     println!("  Session: [sso-session {}]", session_name);

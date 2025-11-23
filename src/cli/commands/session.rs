@@ -47,7 +47,7 @@ async fn add_session(name: String, start_url: String, region: String) -> Result<
     };
 
     // Write to config
-    aws_config::write_sso_session(&session)?;
+    aws_config::write_sso_session(&session, None)?;
 
     println!("✓ Added SSO session '{}' to ~/.aws/config", name);
     println!("  Start URL: {}", start_url);
@@ -182,8 +182,8 @@ async fn edit_session(
         session.sso_region = new_region;
     }
 
-    // Write updated session
-    aws_config::write_sso_session(&session)?;
+    // Write updated session (no rename, just URL/region update)
+    aws_config::write_sso_session(&session, None)?;
 
     println!("✓ Updated SSO session '{}'", name);
     for change in changes {

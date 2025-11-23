@@ -1107,7 +1107,10 @@ pub fn write_default_config(config: &DefaultConfig) -> Result<()> {
 }
 
 /// Write SSO session to ~/.aws/config
-pub fn write_sso_session(session: &SsoSession) -> Result<()> {
+/// If `old_name` is provided and different from the new name, handles renaming:
+/// - Deletes the old session
+/// - Updates all profiles that reference the old session to use the new name
+pub fn write_sso_session(session: &SsoSession, old_name: Option<&str>) -> Result<()> {
     let config_path = config_file_path()?;
     let aws_dir = config_path
         .parent()
@@ -1138,11 +1141,28 @@ pub fn write_sso_session(session: &SsoSession) -> Result<()> {
 
     // Parse existing SSO sessions and profiles from content
     let mut sessions = parse_sso_sessions_from_content(&content);
-    let (default_config_opt, profiles) = parse_profiles_from_content(&content);
+    let (default_config_opt, mut profiles) = parse_profiles_from_content(&content);
 
-    // Add or update the target session
+    // Determine if we're renaming (old_name is different from new name)
+    let is_renaming = old_name.is_some_and(|old| old != session.session_name);
+
+    // Remove old session if renaming, otherwise just remove the target session name
+    if let Some(old) = old_name.filter(|_| is_renaming) {
+        sessions.retain(|s| s.session_name != old);
+    }
     sessions.retain(|s| s.session_name != session.session_name);
     sessions.push(session.clone());
+
+    // If renaming, update all profiles that reference the old session name
+    if let Some(old) = old_name.filter(|_| is_renaming) {
+        for (_profile_name, settings) in &mut profiles {
+            for (key, value) in settings.iter_mut() {
+                if key == "sso_session" && value == old {
+                    *value = session.session_name.clone();
+                }
+            }
+        }
+    }
 
     // Sort sessions alphabetically by name
     sessions.sort_by(|a, b| a.session_name.cmp(&b.session_name));

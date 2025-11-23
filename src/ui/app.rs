@@ -143,6 +143,8 @@ pub struct App {
     sso_region_input: String,
     sso_session_name_input: String,
     sso_input_cursor: usize,
+    /// Original session name when editing (None if creating new)
+    editing_session_original_name: Option<String>,
     /// Default configuration input buffers
     default_region_input: String,
     default_output_input: String,
@@ -281,6 +283,7 @@ impl App {
             sso_region_input: String::new(),
             sso_session_name_input: "default-sso".to_string(),
             sso_input_cursor: 0,
+            editing_session_original_name: None,
             default_region_input: String::new(),
             default_output_input: String::new(),
             default_input_cursor: 0,
@@ -955,6 +958,8 @@ impl App {
         self.sso_region_input.clear();
         self.sso_session_name_input = "default-sso".to_string();
         self.sso_input_cursor = 0;
+        // Clear original name to indicate new session (not editing)
+        self.editing_session_original_name = None;
 
         // Show SSO configuration input dialog
         self.state = AppState::SsoConfigInput {
@@ -1033,6 +1038,8 @@ impl App {
                 self.sso_region_input = session.region.clone();
                 self.sso_session_name_input = session.session_name.clone();
                 self.sso_input_cursor = self.sso_start_url_input.len();
+                // Track original name for rename detection
+                self.editing_session_original_name = Some(session.session_name.clone());
 
                 // Show SSO configuration input dialog
                 self.state = AppState::SsoConfigInput {
@@ -1556,7 +1563,11 @@ impl App {
                             sso_registration_scopes: "sso:account:access".to_string(),
                         };
 
-                        match crate::aws_config::write_sso_session(&session) {
+                        // Pass old name for rename detection (handles profile updates)
+                        match crate::aws_config::write_sso_session(
+                            &session,
+                            self.editing_session_original_name.as_deref(),
+                        ) {
                             Ok(()) => {
                                 self.status_message = Some(format!(
                                     "✓ SSO session '{}' saved to ~/.aws/config",
@@ -1569,6 +1580,7 @@ impl App {
                                 self.sso_region_input.clear();
                                 self.sso_session_name_input = "default-sso".to_string();
                                 self.sso_input_cursor = 0;
+                                self.editing_session_original_name = None;
 
                                 // Reload sessions list to show the new session
                                 self.load_all_sso_sessions().await;
@@ -1588,6 +1600,7 @@ impl App {
                 self.sso_region_input.clear();
                 self.sso_session_name_input = "default-sso".to_string();
                 self.sso_input_cursor = 0;
+                self.editing_session_original_name = None;
                 self.status_message = Some("Configuration cancelled".to_string());
             }
             KeyCode::Left => {
