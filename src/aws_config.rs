@@ -4,7 +4,36 @@ use crate::models::{AccountRole, RoleCredentials};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+
+/// Atomic file write using temp file + rename pattern.
+/// This prevents file corruption if the process is interrupted mid-write.
+fn atomic_write(path: &std::path::Path, content: &str) -> Result<()> {
+    // Create temp file in the same directory (required for atomic rename)
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    let temp_path = parent.join(format!(
+        ".{}.tmp",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("awsom")
+    ));
+
+    // Write content to temp file
+    let mut file = fs::File::create(&temp_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to create temp file: {}", e)))?;
+
+    file.write_all(content.as_bytes())
+        .map_err(|e| SsoError::ConfigError(format!("Failed to write temp file: {}", e)))?;
+
+    // Sync to disk before rename
+    file.sync_all()
+        .map_err(|e| SsoError::ConfigError(format!("Failed to sync temp file: {}", e)))?;
+
+    // Atomic rename
+    fs::rename(&temp_path, path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to rename temp file: {}", e)))?;
+
+    Ok(())
+}
 
 /// Check if awsom has been initialized (backups created)
 fn is_initialized() -> Result<bool> {
@@ -719,8 +748,7 @@ pub fn write_awsom_defaults(config: &DefaultConfig) -> Result<()> {
     // Reconstruct the file
     let result = reconstruct_config(&header, "", &new_content);
 
-    fs::write(&config_path, cleanup_empty_lines(&result))
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
 
     Ok(())
 }
@@ -1088,8 +1116,7 @@ pub fn write_default_config(config: &DefaultConfig) -> Result<()> {
     // Reconstruct the file
     let result = reconstruct_config(&header, "", &new_content);
 
-    fs::write(&config_path, cleanup_empty_lines(&result))
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
 
     Ok(())
 }
@@ -1176,8 +1203,7 @@ pub fn write_sso_session(session: &SsoSession, old_name: Option<&str>) -> Result
     // Reconstruct the file
     let result = reconstruct_config(&header, "", &new_content);
 
-    fs::write(&config_path, cleanup_empty_lines(&result))
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
 
     Ok(())
 }
@@ -1344,8 +1370,7 @@ pub fn delete_sso_session(session_name: &str) -> Result<()> {
     // Reconstruct the file
     let result = reconstruct_config(&header, "", &new_content);
 
-    fs::write(&config_path, cleanup_empty_lines(&result))
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
 
     Ok(())
 }
@@ -1424,8 +1449,7 @@ pub fn write_credentials_with_metadata(
     let sorted_content = sort_credentials_profiles(&new_content);
 
     // Write updated credentials
-    fs::write(&creds_path, sorted_content)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+    atomic_write(&creds_path, &sorted_content)?;
 
     // Also write to config file for region
     let config_path = config_file_path()?;
@@ -1498,8 +1522,7 @@ pub fn write_credentials_with_metadata(
     // Reconstruct the file
     let result = reconstruct_config(&header, "", &new_content);
 
-    fs::write(&config_path, cleanup_empty_lines(&result))
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
 
     Ok(())
 }
@@ -1600,8 +1623,7 @@ pub fn write_static_credentials(
     let sorted_content = sort_credentials_profiles(&new_content);
 
     // Write updated credentials
-    fs::write(&creds_path, sorted_content)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+    atomic_write(&creds_path, &sorted_content)?;
 
     Ok(())
 }
@@ -1662,8 +1684,7 @@ pub fn delete_static_credentials(profile_name: &str) -> Result<()> {
     }
 
     // Write the updated credentials back
-    fs::write(&creds_path, new_content)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+    atomic_write(&creds_path, &new_content)?;
 
     Ok(())
 }
@@ -2296,9 +2317,7 @@ pub fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
             SsoError::ConfigError(format!("Failed to read credentials file: {}", e))
         })?;
         let new_content = rename_ini_section(&content, old_name, new_name);
-        fs::write(&creds_path, new_content).map_err(|e| {
-            SsoError::ConfigError(format!("Failed to write credentials file: {}", e))
-        })?;
+        atomic_write(&creds_path, &new_content)?;
     }
 
     // Rename in config file
@@ -2320,8 +2339,7 @@ pub fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
         };
 
         let new_content = rename_ini_section(&content, &old_section, &new_section);
-        fs::write(&config_path, new_content)
-            .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+        atomic_write(&config_path, &new_content)?;
     }
 
     Ok(())
@@ -2382,8 +2400,7 @@ pub fn invalidate_profile(profile_name: &str) -> Result<()> {
         metadata.as_deref(),
     );
 
-    fs::write(&creds_path, new_content)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write credentials file: {}", e)))?;
+    atomic_write(&creds_path, &new_content)?;
 
     Ok(())
 }
@@ -2398,9 +2415,7 @@ pub fn delete_profile(profile_name: &str) -> Result<()> {
             SsoError::ConfigError(format!("Failed to read credentials file: {}", e))
         })?;
         let new_content = delete_ini_section(&content, profile_name);
-        fs::write(&creds_path, new_content).map_err(|e| {
-            SsoError::ConfigError(format!("Failed to write credentials file: {}", e))
-        })?;
+        atomic_write(&creds_path, &new_content)?;
     }
 
     // Delete from config file
@@ -2416,8 +2431,7 @@ pub fn delete_profile(profile_name: &str) -> Result<()> {
         };
 
         let new_content = delete_ini_section(&content, &section_name);
-        fs::write(&config_path, new_content)
-            .map_err(|e| SsoError::ConfigError(format!("Failed to write config file: {}", e)))?;
+        atomic_write(&config_path, &new_content)?;
     }
 
     Ok(())
