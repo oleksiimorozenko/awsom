@@ -221,26 +221,34 @@ async fn switch_session(name: String) -> Result<()> {
 
 async fn session_login(session_name: Option<String>, force: bool, headless: bool) -> Result<()> {
     // Resolve session using the new resolution logic
-    let (_resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
+    let (resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         None, // No explicit start_url
         None, // No explicit region
     )?;
 
-    // Call the existing login command implementation
-    crate::cli::commands::login::execute(Some(start_url), Some(region), force, headless).await
+    // Call the existing login command implementation with session_name for proper cache key
+    crate::cli::commands::login::execute(
+        resolved_session_name,
+        Some(start_url),
+        Some(region),
+        force,
+        headless,
+    )
+    .await
 }
 
 async fn session_logout(session_name: Option<String>) -> Result<()> {
     // Resolve session using the new resolution logic
-    let (_resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
+    let (resolved_session_name, start_url, region) = aws_config::resolve_sso_session(
         session_name.as_deref(),
         None, // No explicit start_url
         None, // No explicit region
     )?;
 
-    // Call the existing logout command implementation
-    crate::cli::commands::logout::execute(Some(start_url), Some(region)).await
+    // Call the existing logout command implementation with session_name for proper cache key
+    crate::cli::commands::logout::execute(resolved_session_name, Some(start_url), Some(region))
+        .await
 }
 
 async fn session_status(session_name: Option<String>, json: bool) -> Result<()> {

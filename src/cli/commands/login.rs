@@ -5,6 +5,7 @@ use crate::models::SsoInstance;
 use crate::sso_config;
 
 pub async fn execute(
+    session_name: Option<String>,
     start_url: Option<String>,
     region: Option<String>,
     force: bool,
@@ -14,9 +15,9 @@ pub async fn execute(
     let (start_url, region) = sso_config::get_sso_config(start_url, region)?;
 
     let instance = SsoInstance {
+        session_name,
         start_url,
         region,
-        session_name: None,
     };
 
     // Determine if running in headless mode (explicit flag or auto-detect)
