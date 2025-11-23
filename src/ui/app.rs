@@ -74,10 +74,10 @@ pub struct App {
     pending_role: Option<AccountRole>,
     /// Existing profile name for pending role (if found)
     existing_profile_name: Option<String>,
-    /// Device authorization info during login
+    /// Device authorization info during login (updated via watch channel)
     device_auth_info: Option<DeviceAuthorizationInfo>,
-    /// Shared device authorization info from background task
-    device_auth_info_arc: Option<std::sync::Arc<std::sync::Mutex<Option<DeviceAuthorizationInfo>>>>,
+    /// Watch channel receiver for device auth info from background login task
+    device_auth_rx: Option<tokio::sync::watch::Receiver<Option<DeviceAuthorizationInfo>>>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
     /// Pending confirmation action (for modal dialog)
@@ -145,7 +145,7 @@ impl App {
             pending_role: None,
             existing_profile_name: None,
             device_auth_info: None,
-            device_auth_info_arc: None,
+            device_auth_rx: None,
             last_ctrl_c_time: None,
             pending_confirm_action: None,
             sso_start_url_input: String::new(),
@@ -334,7 +334,7 @@ impl App {
                 session_name,
             } => {
                 self.device_auth_info = None;
-                self.device_auth_info_arc = None;
+                self.device_auth_rx = None;
 
                 // Update session in list
                 if let Some(session_mut) = self.sso_sessions.get_mut(session_index) {
@@ -360,13 +360,13 @@ impl App {
             }
             LoginResult::Error { message } => {
                 self.device_auth_info = None;
-                self.device_auth_info_arc = None;
+                self.device_auth_rx = None;
                 self.state = AppState::Main;
                 self.status_message = Some(format!("Login failed: {}", message));
             }
             LoginResult::Cancelled => {
                 self.device_auth_info = None;
-                self.device_auth_info_arc = None;
+                self.device_auth_rx = None;
                 self.state = AppState::Main;
                 self.status_message = Some("Login cancelled".to_string());
             }
@@ -388,7 +388,7 @@ impl App {
                         // Cancel the login attempt
                         tracing::info!("User cancelled login");
                         self.device_auth_info = None;
-                        self.device_auth_info_arc = None;
+                        self.device_auth_rx = None;
                         self.state = AppState::Main;
                         self.status_message = Some("Login cancelled".to_string());
                         // Note: The background task will still complete, but we ignore its result
@@ -727,9 +727,9 @@ impl App {
             let session_name = session.session_name.clone();
             let tx = self.login_tx.clone();
 
-            // Clone device_auth_info Arc for sharing with background task
-            let device_auth_info = std::sync::Arc::new(std::sync::Mutex::new(None));
-            let device_auth_info_clone = device_auth_info.clone();
+            // Create watch channel for sharing device auth info with background task
+            let (device_auth_tx, device_auth_rx) =
+                tokio::sync::watch::channel::<Option<DeviceAuthorizationInfo>>(None);
 
             // Spawn background task for login
             tokio::spawn(async move {
@@ -747,10 +747,8 @@ impl App {
                 // Perform login with callback
                 let result = auth_manager
                     .login_with_callback(&instance, false, |auth_info| {
-                        // Store auth info for TUI to display
-                        if let Ok(mut guard) = device_auth_info_clone.lock() {
-                            *guard = Some(auth_info.clone());
-                        }
+                        // Send auth info for TUI to display via watch channel
+                        let _ = device_auth_tx.send(Some(auth_info.clone()));
 
                         // Only try to open browser if not in headless environment
                         if !crate::env::is_headless_environment() {
@@ -786,8 +784,8 @@ impl App {
                 let _ = tx.send(message);
             });
 
-            // Store the device_auth_info Arc so we can poll it during rendering
-            self.device_auth_info_arc = Some(device_auth_info);
+            // Store the watch receiver so we can poll it during rendering
+            self.device_auth_rx = Some(device_auth_rx);
         }
         Ok(())
     }
@@ -4246,11 +4244,9 @@ impl App {
         const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_frame = SPINNER_FRAMES[self.tick_count as usize % SPINNER_FRAMES.len()];
 
-        // Poll device_auth_info from Arc if available
-        if let Some(ref arc) = self.device_auth_info_arc {
-            if let Ok(guard) = arc.lock() {
-                self.device_auth_info = guard.clone();
-            }
+        // Poll device_auth_info from watch receiver if available
+        if let Some(ref rx) = self.device_auth_rx {
+            self.device_auth_info = rx.borrow().clone();
         }
 
         let mut loading_text = vec![];
