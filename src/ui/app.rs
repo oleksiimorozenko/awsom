@@ -266,6 +266,8 @@ impl App {
     ) -> Result<()> {
         // Refresh interval: 1 minute
         const AUTO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+        // Credential refresh threshold: 3 hours remaining (for 12h credentials, this is ~9h of age)
+        const CREDENTIAL_REFRESH_THRESHOLD_MINUTES: i64 = 180;
 
         loop {
             terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
@@ -298,6 +300,10 @@ impl App {
                     if let Err(e) = self.load_accounts().await {
                         tracing::warn!("Auto-refresh failed: {}", e);
                     }
+
+                    // Auto-refresh expiring credentials (proactive refresh before they expire)
+                    self.auto_refresh_expiring_credentials(CREDENTIAL_REFRESH_THRESHOLD_MINUTES)
+                        .await;
                 } else {
                     // Light refresh: just update credential statuses from local files
                     tracing::debug!("Auto-refreshing credential statuses from local files");
@@ -2920,6 +2926,131 @@ impl App {
             "Refreshed credential statuses for {} profiles",
             self.accounts.len()
         );
+    }
+
+    /// Auto-refresh credentials that are expiring soon.
+    /// This proactively refreshes credentials before they expire to maintain
+    /// continuous access without user intervention.
+    async fn auto_refresh_expiring_credentials(&mut self, threshold_minutes: i64) {
+        // Need both SSO token and instance to refresh credentials
+        let (token, instance) = match (&self.sso_token, &self.sso_instance) {
+            (Some(t), Some(i)) => (t.clone(), i.clone()),
+            _ => return,
+        };
+
+        // Don't refresh if SSO token itself is expired
+        if token.is_expired() {
+            return;
+        }
+
+        let now = chrono::Utc::now();
+
+        // Collect profiles that need credential refresh
+        let profiles_to_refresh: Vec<(AccountRole, String)> = self
+            .accounts
+            .iter()
+            .filter_map(|profile| {
+                if let ProfileEntry::Sso(ref status) = profile {
+                    // Only refresh if:
+                    // 1. Has an active profile name
+                    // 2. Has an expiration time
+                    // 3. Is expiring within threshold
+                    // 4. Is currently active (has valid credentials)
+                    if let (Some(ref profile_name), Some(expiration)) =
+                        (&status.profile_name, status.expiration)
+                    {
+                        if status.is_active {
+                            let remaining_minutes = (expiration - now).num_minutes();
+                            if remaining_minutes > 0 && remaining_minutes <= threshold_minutes {
+                                return Some((status.account_role.clone(), profile_name.clone()));
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if profiles_to_refresh.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            "Auto-refreshing {} credential(s) expiring within {} minutes",
+            profiles_to_refresh.len(),
+            threshold_minutes
+        );
+
+        let mut refreshed_count = 0;
+
+        for (account, profile_name) in profiles_to_refresh {
+            tracing::debug!(
+                "Refreshing credentials for {} ({}/{})",
+                profile_name,
+                account.account_name,
+                account.role_name
+            );
+
+            match self
+                .credential_manager
+                .get_role_credentials(
+                    &instance.region,
+                    &token.access_token,
+                    &account.account_id,
+                    &account.role_name,
+                )
+                .await
+            {
+                Ok(new_creds) => {
+                    // Write refreshed credentials to ~/.aws/credentials
+                    if let Err(e) = crate::aws_config::write_credentials_with_metadata(
+                        &profile_name,
+                        &new_creds,
+                        &instance.region,
+                        None,
+                        Some(&account),
+                    ) {
+                        tracing::warn!(
+                            "Failed to write refreshed credentials for '{}': {}",
+                            profile_name,
+                            e
+                        );
+                        continue;
+                    }
+
+                    // Update the in-memory status
+                    for profile in &mut self.accounts {
+                        if let ProfileEntry::Sso(ref mut status) = profile {
+                            if status.profile_name.as_ref() == Some(&profile_name) {
+                                status.expiration = Some(new_creds.expiration);
+                                status.is_active = true;
+                            }
+                        }
+                    }
+
+                    refreshed_count += 1;
+                    tracing::info!(
+                        "✓ Refreshed credentials for '{}' (expires in {})",
+                        profile_name,
+                        new_creds.expiration_display()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to refresh credentials for '{}': {}",
+                        profile_name,
+                        e
+                    );
+                }
+            }
+        }
+
+        if refreshed_count > 0 {
+            self.status_message = Some(format!(
+                "✓ Auto-refreshed {} credential(s)",
+                refreshed_count
+            ));
+        }
     }
 
     async fn load_accounts(&mut self) -> Result<()> {
