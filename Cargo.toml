@@ -22,6 +22,8 @@ path = "src/main.rs"
 aws-config = "1.5"
 aws-sdk-sso = "1.56"
 aws-sdk-ssooidc = "1.56"
+aws-sdk-ssm = "1.56"
+aws-sdk-ec2 = "1.91"
 aws-types = "1.3"
 aws-smithy-types = "1.2"
 

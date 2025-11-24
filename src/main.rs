@@ -9,6 +9,7 @@ mod credentials;
 mod env;
 mod error;
 mod models;
+mod ssm;
 mod sso_config;
 mod ui;
 
