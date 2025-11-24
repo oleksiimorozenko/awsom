@@ -13,6 +13,7 @@ pub struct SsmInstance {
     pub private_ip: Option<String>,
     pub public_ip: Option<String>,
     pub ssm_status: SsmStatus,
+    pub tags: std::collections::HashMap<String, String>,
 }
 
 /// SSM connection status for an instance
@@ -155,14 +156,16 @@ impl SsmSdkClient {
                         continue;
                     }
 
+                    // Collect all tags into a HashMap
+                    let mut tags = std::collections::HashMap::new();
+                    for tag in instance.tags() {
+                        if let (Some(key), Some(value)) = (tag.key(), tag.value()) {
+                            tags.insert(key.to_string(), value.to_string());
+                        }
+                    }
+
                     // Get instance name from tags
-                    let name = instance
-                        .tags()
-                        .iter()
-                        .find(|tag| tag.key() == Some("Name"))
-                        .and_then(|tag| tag.value())
-                        .unwrap_or("")
-                        .to_string();
+                    let name = tags.get("Name").cloned().unwrap_or_default();
 
                     let state = instance
                         .state()
@@ -183,6 +186,7 @@ impl SsmSdkClient {
                         private_ip,
                         public_ip,
                         ssm_status: SsmStatus::Unknown,
+                        tags,
                     });
                 }
             }

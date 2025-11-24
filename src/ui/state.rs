@@ -28,6 +28,8 @@ pub enum AppState {
     ViewProfile { details: Vec<(String, String)> },
     /// SSM browser - browse EC2 instances for the current profile
     SsmBrowser,
+    /// View EC2 instance tags
+    ViewInstanceTags { tags: Vec<(String, String)> },
 }
 
 /// Steps for static credential input wizard

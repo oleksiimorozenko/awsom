@@ -454,6 +454,10 @@ impl App {
             AppState::SsmBrowser => {
                 self.handle_ssm_browser_key(key).await?;
             }
+            AppState::ViewInstanceTags { .. } => {
+                // Any key returns to SSM browser
+                self.state = AppState::SsmBrowser;
+            }
         }
         Ok(())
     }
@@ -3948,6 +3952,9 @@ impl App {
             }
             AppState::ViewProfile { details } => self.draw_view_profile_screen(f, details.clone()),
             AppState::SsmBrowser => self.draw_ssm_browser(f),
+            AppState::ViewInstanceTags { tags } => {
+                self.draw_view_instance_tags_screen(f, tags.clone())
+            }
         }
     }
 
@@ -5247,6 +5254,19 @@ impl App {
                 };
                 self.status_message = Some(status.to_string());
             }
+            KeyCode::Char('v') => {
+                // View instance tags
+                if let Some(instance) = self.get_selected_ssm_instance() {
+                    // Convert tags HashMap to sorted Vec for display
+                    let mut tags: Vec<(String, String)> = instance
+                        .tags
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    tags.sort_by(|a, b| a.0.cmp(&b.0));
+                    self.state = AppState::ViewInstanceTags { tags };
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -5558,9 +5578,63 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | /: Search | o: Toggle offline | r: Refresh | q/Esc: Back",
+            "↑↓/jk: Navigate | Enter: Start session | v: View tags | y: Copy command | /: Search | o: Toggle offline | r: Refresh | q/Esc: Back",
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);
+    }
+
+    fn draw_view_instance_tags_screen(&self, f: &mut Frame, tags: Vec<(String, String)>) {
+        let mut lines: Vec<Line> = vec![
+            Line::from(Span::styled(
+                "Instance Tags",
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.blue))
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+
+        if tags.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No tags found",
+                Style::default().fg(catppuccin_color(self.theme.colors.subtext0)),
+            )));
+        } else {
+            // Find max key length for alignment
+            let max_key_len = tags.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+
+            // Add tags
+            for (key, value) in tags {
+                let padded_key = format!("{:>width$}", key, width = max_key_len);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", padded_key),
+                        Style::default()
+                            .fg(catppuccin_color(self.theme.colors.yellow))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        value,
+                        Style::default().fg(catppuccin_color(self.theme.colors.text)),
+                    ),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Press any key to return",
+            Style::default().fg(catppuccin_color(self.theme.colors.subtext0)),
+        )));
+
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("View Instance Tags"),
+            )
+            .style(Style::default().fg(catppuccin_color(self.theme.colors.text)));
+        f.render_widget(paragraph, f.area());
     }
 }
