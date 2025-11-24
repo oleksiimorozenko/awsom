@@ -120,6 +120,8 @@ pub struct App {
     ssm_list_state: TableState,
     /// SSM browser: filter input
     ssm_filter: String,
+    /// SSM browser: search mode (true when user is actively typing search)
+    ssm_search_mode: bool,
     /// SSM browser: loading state
     ssm_loading: bool,
     /// SSM browser: show offline instances (per-session setting)
@@ -183,6 +185,7 @@ impl App {
             ssm_instances: Vec::new(),
             ssm_list_state: TableState::default(),
             ssm_filter: String::new(),
+            ssm_search_mode: false,
             ssm_loading: false,
             ssm_show_offline: false,
         })
@@ -4240,7 +4243,9 @@ impl App {
                 Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":console "),
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":refresh"),
+                Span::raw(":refresh "),
+                Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":ssm"),
             ]),
         ];
         let help_bar = Paragraph::new(help_lines)
@@ -5161,12 +5166,52 @@ impl App {
 
     /// Handle key events in SSM browser
     async fn handle_ssm_browser_key(&mut self, key: KeyCode) -> Result<()> {
+        // If in search mode, handle search input
+        if self.ssm_search_mode {
+            match key {
+                KeyCode::Esc => {
+                    // Exit search mode
+                    self.ssm_search_mode = false;
+                    self.status_message = None;
+                }
+                KeyCode::Enter => {
+                    // Exit search mode and keep filter
+                    self.ssm_search_mode = false;
+                    self.status_message = None;
+                }
+                KeyCode::Backspace => {
+                    // Delete last character
+                    self.ssm_filter.pop();
+                    if self.ssm_filter.is_empty() {
+                        self.status_message = Some("Search: _".to_string());
+                    } else {
+                        self.status_message = Some(format!("Search: {}_", self.ssm_filter));
+                    }
+                }
+                KeyCode::Char(c) => {
+                    // Add character to filter
+                    self.ssm_filter.push(c);
+                    self.status_message = Some(format!("Search: {}_", self.ssm_filter));
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Normal mode key handling
         match key {
             KeyCode::Esc | KeyCode::Char('q') => {
                 // Return to main screen
                 self.state = AppState::Main;
                 self.ssm_instances.clear();
                 self.ssm_filter.clear();
+                self.ssm_search_mode = false;
+            }
+            KeyCode::Char('/') => {
+                // Enter search mode
+                self.ssm_search_mode = true;
+                self.ssm_filter.clear();
+                self.status_message = Some("Search: _".to_string());
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 // Next instance
@@ -5513,7 +5558,7 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | o: Toggle offline | r: Refresh | q/Esc: Back",
+            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | /: Search | o: Toggle offline | r: Refresh | q/Esc: Back",
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);
