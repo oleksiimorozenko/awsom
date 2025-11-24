@@ -43,14 +43,18 @@ impl OidcClient {
     }
 
     /// Register this client with AWS SSO OIDC
+    /// Requests refresh_token grant type to enable token refresh
     async fn register_client(&self) -> Result<(String, String)> {
-        tracing::debug!("Registering client with SSO-OIDC");
+        tracing::debug!("Registering client with SSO-OIDC (with refresh_token grant)");
 
         let response = self
             .client
             .register_client()
             .client_name(CLIENT_NAME)
             .client_type(CLIENT_TYPE)
+            // Request both device_code and refresh_token grants
+            .grant_types("urn:ietf:params:oauth:grant-type:device_code")
+            .grant_types("refresh_token")
             .send()
             .await
             .map_err(|e| SsoError::AwsSdk(format!("Failed to register client: {}", e)))?;
@@ -142,12 +146,20 @@ impl OidcClient {
                     let expires_in = response.expires_in();
                     let expires_at = Utc::now() + Duration::seconds(expires_in as i64);
 
-                    tracing::debug!("Token expires in {} seconds", expires_in);
+                    let has_refresh = response.refresh_token().is_some();
+                    tracing::debug!(
+                        "Token expires in {} seconds, refresh_token: {}",
+                        expires_in,
+                        if has_refresh { "yes" } else { "no" }
+                    );
 
                     return Ok(SsoToken {
                         access_token,
                         expires_at,
                         refresh_token: response.refresh_token().map(|s| s.to_string()),
+                        // Store client credentials for token refresh
+                        client_id: Some(client_id.to_string()),
+                        client_secret: Some(client_secret.to_string()),
                         region: Some(self.region.clone()),
                         start_url: Some(start_url.to_string()),
                     });
@@ -298,5 +310,71 @@ impl OidcClient {
         eprintln!("Waiting for authorization...");
 
         Ok(())
+    }
+
+    /// Refresh an existing token using the refresh_token grant type
+    /// Returns a new SsoToken with updated access_token and expiration
+    #[allow(dead_code)]
+    pub async fn refresh_token(&self, token: &SsoToken) -> Result<SsoToken> {
+        // Validate that we have the required credentials
+        let client_id = token.client_id.as_ref().ok_or_else(|| {
+            SsoError::AuthenticationFailed("No client_id in token for refresh".to_string())
+        })?;
+
+        let client_secret = token.client_secret.as_ref().ok_or_else(|| {
+            SsoError::AuthenticationFailed("No client_secret in token for refresh".to_string())
+        })?;
+
+        let refresh_token_value = token.refresh_token.as_ref().ok_or_else(|| {
+            SsoError::AuthenticationFailed("No refresh_token in token for refresh".to_string())
+        })?;
+
+        tracing::debug!("Attempting to refresh SSO token");
+
+        let response = self
+            .client
+            .create_token()
+            .client_id(client_id)
+            .client_secret(client_secret)
+            .grant_type("refresh_token")
+            .refresh_token(refresh_token_value)
+            .send()
+            .await
+            .map_err(|e| {
+                use aws_sdk_ssooidc::error::ProvideErrorMetadata;
+                let code = e.code().unwrap_or("unknown");
+                let message = e.message().unwrap_or("unknown error");
+                SsoError::AuthenticationFailed(format!(
+                    "Token refresh failed ({}): {}",
+                    code, message
+                ))
+            })?;
+
+        let access_token = response
+            .access_token()
+            .ok_or_else(|| SsoError::AwsSdk("No access_token in refresh response".to_string()))?
+            .to_string();
+
+        let expires_in = response.expires_in();
+        let expires_at = Utc::now() + Duration::seconds(expires_in as i64);
+
+        tracing::info!(
+            "SSO token refreshed successfully, new expiration in {} seconds",
+            expires_in
+        );
+
+        Ok(SsoToken {
+            access_token,
+            expires_at,
+            // Use new refresh_token if provided, otherwise keep the old one
+            refresh_token: response
+                .refresh_token()
+                .map(|s| s.to_string())
+                .or_else(|| token.refresh_token.clone()),
+            client_id: token.client_id.clone(),
+            client_secret: token.client_secret.clone(),
+            region: token.region.clone(),
+            start_url: token.start_url.clone(),
+        })
     }
 }

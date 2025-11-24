@@ -336,7 +336,8 @@ impl App {
                 self.device_auth_info = None;
                 self.device_auth_rx = None;
 
-                // Update session in list
+                // Update session in list (unbox the token)
+                let token = *token;
                 if let Some(session_mut) = self.sso_sessions.get_mut(session_index) {
                     session_mut.is_active = true;
                     session_mut.token = Some(token.clone());
@@ -772,7 +773,7 @@ impl App {
                 let message = match result {
                     Ok(token) => LoginResult::Success {
                         session_index: index,
-                        token,
+                        token: Box::new(token),
                         instance,
                         session_name,
                     },

@@ -31,6 +31,22 @@ pub struct SsoToken {
     )]
     pub refresh_token: Option<String>,
 
+    /// Client ID (needed for token refresh)
+    #[serde(
+        rename = "clientId",
+        alias = "client_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_id: Option<String>,
+
+    /// Client secret (needed for token refresh)
+    #[serde(
+        rename = "clientSecret",
+        alias = "client_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_secret: Option<String>,
+
     /// Region (optional, required for compatibility)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
@@ -55,6 +71,25 @@ impl SsoToken {
 
     pub fn expires_in_minutes(&self) -> i64 {
         self.expires_in_seconds() / 60
+    }
+
+    /// Check if token can be refreshed (has refresh_token, client_id, client_secret)
+    #[allow(dead_code)]
+    pub fn can_refresh(&self) -> bool {
+        self.refresh_token.is_some() && self.client_id.is_some() && self.client_secret.is_some()
+    }
+
+    /// Check if token needs refresh (expiring within threshold)
+    /// Default threshold: 5 minutes
+    #[allow(dead_code)]
+    pub fn needs_refresh(&self) -> bool {
+        self.expires_in_minutes() < 5
+    }
+
+    /// Check if token should be auto-refreshed (needs refresh AND can refresh)
+    #[allow(dead_code)]
+    pub fn should_auto_refresh(&self) -> bool {
+        self.needs_refresh() && self.can_refresh()
     }
 
     /// Format expiration time as human-readable string
@@ -267,6 +302,8 @@ mod tests {
             access_token: "test".to_string(),
             expires_at: Utc::now() - Duration::hours(1),
             refresh_token: None,
+            client_id: None,
+            client_secret: None,
             region: None,
             start_url: None,
         };
@@ -276,6 +313,8 @@ mod tests {
             access_token: "test".to_string(),
             expires_at: Utc::now() + Duration::hours(1),
             refresh_token: None,
+            client_id: None,
+            client_secret: None,
             region: None,
             start_url: None,
         };
@@ -288,6 +327,8 @@ mod tests {
             access_token: "test".to_string(),
             expires_at: Utc::now() + Duration::minutes(90),
             refresh_token: None,
+            client_id: None,
+            client_secret: None,
             region: None,
             start_url: None,
         };
@@ -298,6 +339,8 @@ mod tests {
             access_token: "test".to_string(),
             expires_at: Utc::now() - Duration::minutes(10),
             refresh_token: None,
+            client_id: None,
+            client_secret: None,
             region: None,
             start_url: None,
         };

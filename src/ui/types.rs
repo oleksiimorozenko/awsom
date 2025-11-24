@@ -6,7 +6,7 @@ use crate::models::{AccountRole, SsoInstance, SsoToken};
 pub enum LoginResult {
     Success {
         session_index: usize,
-        token: SsoToken,
+        token: Box<SsoToken>,
         instance: SsoInstance,
         session_name: String,
     },
