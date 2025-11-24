@@ -806,13 +806,13 @@ impl App {
             session.token = None;
             session.token_expiration = None;
 
-            // If this was the current session, clear it
+            // If this was the current session, clear token but keep profiles visible
+            // (credentials may still be valid even without active SSO session)
             if let Some(ref current_instance) = self.sso_instance {
                 if current_instance.start_url == session.start_url {
                     self.sso_instance = None;
                     self.sso_token = None;
-                    self.accounts.clear();
-                    self.accounts_list_state.select(None);
+                    // Don't clear accounts - profiles remain visible with their credential status
                 }
             }
 
@@ -2568,11 +2568,11 @@ impl App {
             }
         }
 
-        // Clear session data
+        // Clear session data but keep profiles visible
+        // (credentials may still be valid even without active SSO session)
         self.sso_token = None;
         self.sso_instance = None;
-        self.accounts.clear();
-        self.accounts_list_state.select(None);
+        // Don't clear accounts - profiles remain visible with their credential status
         self.status_message = Some(
             "Logged out successfully. Switch to Sessions pane (Tab) and press Enter to login."
                 .to_string(),
