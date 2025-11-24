@@ -122,6 +122,8 @@ pub struct App {
     ssm_filter: String,
     /// SSM browser: loading state
     ssm_loading: bool,
+    /// SSM browser: show offline instances (per-session setting)
+    ssm_show_offline: bool,
 }
 
 impl App {
@@ -182,6 +184,7 @@ impl App {
             ssm_list_state: TableState::default(),
             ssm_filter: String::new(),
             ssm_loading: false,
+            ssm_show_offline: false,
         })
     }
 
@@ -5189,6 +5192,16 @@ impl App {
                     self.load_ssm_instances(&profile).await;
                 }
             }
+            KeyCode::Char('o') => {
+                // Toggle showing offline instances
+                self.ssm_show_offline = !self.ssm_show_offline;
+                let status = if self.ssm_show_offline {
+                    "Showing all instances (online and offline)"
+                } else {
+                    "Showing only online instances"
+                };
+                self.status_message = Some(status.to_string());
+            }
             _ => {}
         }
         Ok(())
@@ -5231,19 +5244,30 @@ impl App {
     }
 
     fn filtered_ssm_instances(&self) -> Vec<&crate::ssm::SsmInstance> {
-        if self.ssm_filter.is_empty() {
-            self.ssm_instances.iter().collect()
-        } else {
-            let filter = self.ssm_filter.to_lowercase();
-            self.ssm_instances
-                .iter()
-                .filter(|i| {
-                    i.name.to_lowercase().contains(&filter)
+        let filter = self.ssm_filter.to_lowercase();
+        self.ssm_instances
+            .iter()
+            .filter(|i| {
+                // Always exclude terminated instances
+                if i.state == "terminated" {
+                    return false;
+                }
+
+                // Filter by online status if toggle is off
+                if !self.ssm_show_offline && !i.ssm_status.is_connectable() {
+                    return false;
+                }
+
+                // Apply search filter if present
+                if !filter.is_empty() {
+                    return i.name.to_lowercase().contains(&filter)
                         || i.instance_id.to_lowercase().contains(&filter)
-                        || i.private_ip.as_ref().is_some_and(|ip| ip.contains(&filter))
-                })
-                .collect()
-        }
+                        || i.private_ip.as_ref().is_some_and(|ip| ip.contains(&filter));
+                }
+
+                true
+            })
+            .collect()
     }
 
     fn get_selected_ssm_instance(&self) -> Option<&crate::ssm::SsmInstance> {
@@ -5384,7 +5408,21 @@ impl App {
             let spinner = spinner_frames[self.tick_count as usize % spinner_frames.len()];
             format!("{} SSM Browser - Loading instances...", spinner)
         } else {
-            format!("SSM Browser - {} instance(s)", self.ssm_instances.len())
+            // Count online instances and total (excluding terminated)
+            let online_count = self
+                .ssm_instances
+                .iter()
+                .filter(|i| i.state != "terminated" && i.ssm_status.is_connectable())
+                .count();
+            let total_count = self
+                .ssm_instances
+                .iter()
+                .filter(|i| i.state != "terminated")
+                .count();
+            format!(
+                "SSM Browser - {} online / {} total",
+                online_count, total_count
+            )
         };
         let header = Paragraph::new(header_text)
             .style(
@@ -5396,41 +5434,52 @@ impl App {
         f.render_widget(header, chunks[0]);
 
         // Instance table - collect owned data to avoid borrow issues
-        let filter = self.ssm_filter.to_lowercase();
         let green = catppuccin_color(self.theme.colors.green);
         let red = catppuccin_color(self.theme.colors.red);
         let yellow = catppuccin_color(self.theme.colors.yellow);
 
-        let rows: Vec<Row> = self
-            .ssm_instances
+        // Collect all data into owned values to release the borrow on self
+        let instance_data: Vec<(String, String, String, String, String, bool, bool)> = self
+            .filtered_ssm_instances()
             .iter()
-            .filter(|i| {
-                filter.is_empty()
-                    || i.name.to_lowercase().contains(&filter)
-                    || i.instance_id.to_lowercase().contains(&filter)
-                    || i.private_ip.as_ref().is_some_and(|ip| ip.contains(&filter))
+            .map(|i| {
+                (
+                    i.ssm_status.as_str().to_string(),
+                    i.name.clone(),
+                    i.instance_id.clone(),
+                    i.state.clone(),
+                    i.private_ip.clone().unwrap_or_default(),
+                    i.ssm_status.is_connectable(),
+                    i.state == "running",
+                )
             })
-            .map(|instance| {
-                let status_style = if instance.ssm_status.is_connectable() {
-                    Style::default().fg(green)
-                } else {
-                    Style::default().fg(red)
-                };
+            .collect();
 
-                let state_style = if instance.state == "running" {
-                    Style::default().fg(green)
-                } else {
-                    Style::default().fg(yellow)
-                };
+        let rows: Vec<Row> = instance_data
+            .iter()
+            .map(
+                |(status, name, instance_id, state, private_ip, is_connectable, is_running)| {
+                    let status_style = if *is_connectable {
+                        Style::default().fg(green)
+                    } else {
+                        Style::default().fg(red)
+                    };
 
-                Row::new(vec![
-                    Cell::from(instance.ssm_status.as_str()).style(status_style),
-                    Cell::from(instance.name.clone()),
-                    Cell::from(instance.instance_id.clone()),
-                    Cell::from(instance.state.clone()).style(state_style),
-                    Cell::from(instance.private_ip.clone().unwrap_or_default()),
-                ])
-            })
+                    let state_style = if *is_running {
+                        Style::default().fg(green)
+                    } else {
+                        Style::default().fg(yellow)
+                    };
+
+                    Row::new(vec![
+                        Cell::from(status.as_str()).style(status_style),
+                        Cell::from(name.clone()),
+                        Cell::from(instance_id.clone()),
+                        Cell::from(state.clone()).style(state_style),
+                        Cell::from(private_ip.clone()),
+                    ])
+                },
+            )
             .collect();
 
         let table = Table::new(
@@ -5464,7 +5513,7 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | r: Refresh | q/Esc: Back",
+            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | o: Toggle offline | r: Refresh | q/Esc: Back",
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);
