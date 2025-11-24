@@ -2657,3 +2657,109 @@ pub fn list_profile_statuses() -> Result<Vec<ProfileStatus>> {
 
     Ok(profiles)
 }
+
+/// Read credentials from ~/.aws/credentials for a profile
+/// Returns access_key_id, secret_access_key, and optional session_token
+pub fn get_profile_credentials(profile_name: &str) -> Result<Option<ProfileCredentials>> {
+    let creds_path = credentials_file_path()?;
+
+    if !creds_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&creds_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read credentials file: {}", e)))?;
+
+    let mut current_profile: Option<String> = None;
+    let mut profile_data: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            // Check previous profile
+            if current_profile.as_deref() == Some(profile_name) {
+                return extract_credentials(&profile_data);
+            }
+
+            let name = trimmed[1..trimmed.len() - 1].to_string();
+            current_profile = Some(name);
+            profile_data.clear();
+        } else if let Some((key, value)) = trimmed.split_once('=') {
+            profile_data.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+
+    // Check last profile
+    if current_profile.as_deref() == Some(profile_name) {
+        return extract_credentials(&profile_data);
+    }
+
+    Ok(None)
+}
+
+/// Credentials read from profile
+#[derive(Debug, Clone)]
+pub struct ProfileCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+}
+
+fn extract_credentials(
+    profile_data: &HashMap<String, String>,
+) -> Result<Option<ProfileCredentials>> {
+    let access_key = match profile_data.get("aws_access_key_id") {
+        Some(k) => k.clone(),
+        None => return Ok(None),
+    };
+
+    let secret_key = match profile_data.get("aws_secret_access_key") {
+        Some(k) => k.clone(),
+        None => return Ok(None),
+    };
+
+    let session_token = profile_data.get("aws_session_token").cloned();
+
+    Ok(Some(ProfileCredentials {
+        access_key_id: access_key,
+        secret_access_key: secret_key,
+        session_token,
+    }))
+}
+
+/// Get region for a profile from ~/.aws/config
+pub fn get_profile_region(profile_name: &str) -> Result<Option<String>> {
+    let config_path = config_file_path()?;
+
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
+
+    let mut current_profile: Option<String> = None;
+    let target_section = if profile_name == "default" {
+        "default".to_string()
+    } else {
+        format!("profile {}", profile_name)
+    };
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let name = trimmed[1..trimmed.len() - 1].to_string();
+            current_profile = Some(name);
+        } else if current_profile.as_deref() == Some(&target_section) {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim() == "region" {
+                    return Ok(Some(value.trim().to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}

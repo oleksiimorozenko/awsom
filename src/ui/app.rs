@@ -114,6 +114,14 @@ pub struct App {
     login_rx: mpsc::UnboundedReceiver<LoginResult>,
     /// Sender for login tasks (kept to create clones for background tasks)
     login_tx: mpsc::UnboundedSender<LoginResult>,
+    /// SSM browser: list of EC2 instances
+    ssm_instances: Vec<crate::ssm::SsmInstance>,
+    /// SSM browser: table selection state
+    ssm_list_state: TableState,
+    /// SSM browser: filter input
+    ssm_filter: String,
+    /// SSM browser: loading state
+    ssm_loading: bool,
 }
 
 impl App {
@@ -170,6 +178,10 @@ impl App {
             tick_count: 0,
             login_rx,
             login_tx,
+            ssm_instances: Vec::new(),
+            ssm_list_state: TableState::default(),
+            ssm_filter: String::new(),
+            ssm_loading: false,
         })
     }
 
@@ -433,6 +445,9 @@ impl App {
                 // Any key exits view profile screen
                 self.state = AppState::Main;
             }
+            AppState::SsmBrowser => {
+                self.handle_ssm_browser_key(key).await?;
+            }
         }
         Ok(())
     }
@@ -587,6 +602,12 @@ impl App {
                 if self.active_pane == ActivePane::Accounts {
                     // View profile details
                     self.view_profile_details();
+                }
+            }
+            KeyCode::Char('s') => {
+                if self.active_pane == ActivePane::Accounts {
+                    // Open SSM browser
+                    self.open_ssm_browser().await?;
                 }
             }
             _ => {}
@@ -3920,6 +3941,7 @@ impl App {
                 self.draw_confirmation_dialog(f, title.clone(), message.clone())
             }
             AppState::ViewProfile { details } => self.draw_view_profile_screen(f, details.clone()),
+            AppState::SsmBrowser => self.draw_ssm_browser(f),
         }
     }
 
@@ -5012,5 +5034,423 @@ impl App {
         let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
             .style(Style::default().fg(Color::Gray));
         f.render_widget(help, chunks[4]);
+    }
+
+    // ==================== SSM Browser ====================
+
+    /// Open SSM browser for the selected profile
+    async fn open_ssm_browser(&mut self) -> Result<()> {
+        // Get currently selected profile
+        let selected_idx = match self.accounts_list_state.selected() {
+            Some(idx) => idx,
+            None => {
+                self.status_message = Some("No profile selected".to_string());
+                return Ok(());
+            }
+        };
+
+        let profile = match self.accounts.get(selected_idx) {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        // Only SSO profiles with credentials can use SSM
+        let (profile_name, is_active) = match &profile {
+            ProfileEntry::Sso(status) => {
+                let name = status.profile_name.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}/{}",
+                        status.account_role.account_name, status.account_role.role_name
+                    )
+                });
+                (name, status.is_active)
+            }
+            ProfileEntry::Static { profile_name, .. } => (profile_name.clone(), true),
+            ProfileEntry::Incomplete { profile_name, .. } => {
+                self.status_message = Some(format!(
+                    "Profile '{}' has no credentials. Configure it first.",
+                    profile_name
+                ));
+                return Ok(());
+            }
+        };
+
+        if !is_active {
+            self.status_message = Some(format!(
+                "Profile '{}' has no active credentials. Press Enter to get credentials first.",
+                profile_name
+            ));
+            return Ok(());
+        }
+
+        // Switch to SSM browser state
+        self.state = AppState::SsmBrowser;
+        self.ssm_loading = true;
+        self.ssm_instances.clear();
+        self.ssm_filter.clear();
+        self.ssm_list_state.select(None);
+        self.status_message = Some(format!("Loading instances for '{}'...", profile_name));
+
+        // Load instances in background
+        self.load_ssm_instances(&profile_name).await;
+
+        Ok(())
+    }
+
+    /// Load SSM instances for the given profile
+    async fn load_ssm_instances(&mut self, profile_name: &str) {
+        // Read credentials from the profile
+        let creds = match crate::aws_config::get_profile_credentials(profile_name) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                self.status_message = Some(format!("No credentials found for '{}'", profile_name));
+                self.ssm_loading = false;
+                return;
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to read credentials: {}", e));
+                self.ssm_loading = false;
+                return;
+            }
+        };
+
+        // Get the region for this profile (default to us-east-1)
+        let region = crate::aws_config::get_profile_region(profile_name)
+            .unwrap_or_else(|_| Some("us-east-1".to_string()))
+            .unwrap_or_else(|| "us-east-1".to_string());
+
+        // Create SSM client with credentials
+        let client = match crate::ssm::SsmSdkClient::with_credentials(
+            &region,
+            &creds.access_key_id,
+            &creds.secret_access_key,
+            creds.session_token.as_deref().unwrap_or(""),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.status_message = Some(format!("Failed to create SSM client: {}", e));
+                self.ssm_loading = false;
+                return;
+            }
+        };
+
+        // List instances
+        match client.list_instances().await {
+            Ok(instances) => {
+                let count = instances.len();
+                self.ssm_instances = instances;
+                self.ssm_loading = false;
+                if count > 0 {
+                    self.ssm_list_state.select(Some(0));
+                    self.status_message = Some(format!("Found {} instance(s)", count));
+                } else {
+                    self.status_message = Some("No EC2 instances found".to_string());
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to list instances: {}", e));
+                self.ssm_loading = false;
+            }
+        }
+    }
+
+    /// Handle key events in SSM browser
+    async fn handle_ssm_browser_key(&mut self, key: KeyCode) -> Result<()> {
+        match key {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Return to main screen
+                self.state = AppState::Main;
+                self.ssm_instances.clear();
+                self.ssm_filter.clear();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                // Next instance
+                self.next_ssm_instance();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                // Previous instance
+                self.previous_ssm_instance();
+            }
+            KeyCode::Enter => {
+                // Start SSM session
+                self.start_ssm_session();
+            }
+            KeyCode::Char('y') => {
+                // Copy command to clipboard (just show it for now)
+                self.copy_ssm_command();
+            }
+            KeyCode::Char('r') => {
+                // Refresh instance list
+                if let Some(profile) = self.get_selected_profile_name() {
+                    self.ssm_loading = true;
+                    self.status_message = Some("Refreshing instances...".to_string());
+                    self.load_ssm_instances(&profile).await;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn next_ssm_instance(&mut self) {
+        let filtered = self.filtered_ssm_instances();
+        if filtered.is_empty() {
+            return;
+        }
+        let i = match self.ssm_list_state.selected() {
+            Some(i) => {
+                if i >= filtered.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.ssm_list_state.select(Some(i));
+    }
+
+    fn previous_ssm_instance(&mut self) {
+        let filtered = self.filtered_ssm_instances();
+        if filtered.is_empty() {
+            return;
+        }
+        let i = match self.ssm_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    filtered.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.ssm_list_state.select(Some(i));
+    }
+
+    fn filtered_ssm_instances(&self) -> Vec<&crate::ssm::SsmInstance> {
+        if self.ssm_filter.is_empty() {
+            self.ssm_instances.iter().collect()
+        } else {
+            let filter = self.ssm_filter.to_lowercase();
+            self.ssm_instances
+                .iter()
+                .filter(|i| {
+                    i.name.to_lowercase().contains(&filter)
+                        || i.instance_id.to_lowercase().contains(&filter)
+                        || i.private_ip.as_ref().is_some_and(|ip| ip.contains(&filter))
+                })
+                .collect()
+        }
+    }
+
+    fn get_selected_ssm_instance(&self) -> Option<&crate::ssm::SsmInstance> {
+        let filtered = self.filtered_ssm_instances();
+        self.ssm_list_state
+            .selected()
+            .and_then(|idx| filtered.get(idx).copied())
+    }
+
+    fn get_selected_profile_name(&self) -> Option<String> {
+        self.accounts_list_state.selected().and_then(|idx| {
+            self.accounts.get(idx).and_then(|p| match p {
+                ProfileEntry::Sso(status) => status.profile_name.clone(),
+                ProfileEntry::Static { profile_name, .. } => Some(profile_name.clone()),
+                ProfileEntry::Incomplete { .. } => None,
+            })
+        })
+    }
+
+    fn start_ssm_session(&mut self) {
+        let instance = match self.get_selected_ssm_instance() {
+            Some(i) => i.clone(),
+            None => {
+                self.status_message = Some("No instance selected".to_string());
+                return;
+            }
+        };
+
+        if !instance.ssm_status.is_connectable() {
+            self.status_message = Some(format!(
+                "Instance {} is not SSM-connectable (status: {})",
+                instance.instance_id,
+                instance.ssm_status.as_str()
+            ));
+            return;
+        }
+
+        // Get region from profile
+        let region = self
+            .get_selected_profile_name()
+            .and_then(|p| crate::aws_config::get_profile_region(&p).ok().flatten())
+            .unwrap_or_else(|| "us-east-1".to_string());
+
+        // Create a temporary client just to get the command/start session
+        let cmd = format!(
+            "aws ssm start-session --target {} --region {}",
+            instance.instance_id, region
+        );
+
+        // Try to open terminal with session
+        #[cfg(target_os = "macos")]
+        {
+            let script = format!(
+                r#"tell application "Terminal"
+                    activate
+                    do script "{}"
+                end tell"#,
+                cmd.replace('"', r#"\""#)
+            );
+
+            match std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .spawn()
+            {
+                Ok(_) => {
+                    self.status_message = Some(format!(
+                        "Started session to {} ({})",
+                        instance.name, instance.instance_id
+                    ));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Failed to open Terminal: {}", e));
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.status_message = Some(format!("Run: {}", cmd));
+        }
+    }
+
+    fn copy_ssm_command(&mut self) {
+        let instance = match self.get_selected_ssm_instance() {
+            Some(i) => i,
+            None => {
+                self.status_message = Some("No instance selected".to_string());
+                return;
+            }
+        };
+
+        let region = self
+            .get_selected_profile_name()
+            .and_then(|p| crate::aws_config::get_profile_region(&p).ok().flatten())
+            .unwrap_or_else(|| "us-east-1".to_string());
+
+        let cmd = format!(
+            "aws ssm start-session --target {} --region {}",
+            instance.instance_id, region
+        );
+
+        // Show the command in status (clipboard requires additional deps)
+        self.status_message = Some(format!("Command: {}", cmd));
+    }
+
+    fn draw_ssm_browser(&mut self, f: &mut Frame) {
+        use ratatui::widgets::Row;
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Min(10),   // Instance list
+                Constraint::Length(3), // Help
+            ])
+            .split(f.area());
+
+        // Header
+        let header_text = if self.ssm_loading {
+            let spinner_frames: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let spinner = spinner_frames[self.tick_count as usize % spinner_frames.len()];
+            format!("{} SSM Browser - Loading instances...", spinner)
+        } else {
+            format!("SSM Browser - {} instance(s)", self.ssm_instances.len())
+        };
+        let header = Paragraph::new(header_text)
+            .style(
+                Style::default()
+                    .fg(catppuccin_color(self.theme.colors.blue))
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(header, chunks[0]);
+
+        // Instance table - collect owned data to avoid borrow issues
+        let filter = self.ssm_filter.to_lowercase();
+        let green = catppuccin_color(self.theme.colors.green);
+        let red = catppuccin_color(self.theme.colors.red);
+        let yellow = catppuccin_color(self.theme.colors.yellow);
+
+        let rows: Vec<Row> = self
+            .ssm_instances
+            .iter()
+            .filter(|i| {
+                filter.is_empty()
+                    || i.name.to_lowercase().contains(&filter)
+                    || i.instance_id.to_lowercase().contains(&filter)
+                    || i.private_ip.as_ref().is_some_and(|ip| ip.contains(&filter))
+            })
+            .map(|instance| {
+                let status_style = if instance.ssm_status.is_connectable() {
+                    Style::default().fg(green)
+                } else {
+                    Style::default().fg(red)
+                };
+
+                let state_style = if instance.state == "running" {
+                    Style::default().fg(green)
+                } else {
+                    Style::default().fg(yellow)
+                };
+
+                Row::new(vec![
+                    Cell::from(instance.ssm_status.as_str()).style(status_style),
+                    Cell::from(instance.name.clone()),
+                    Cell::from(instance.instance_id.clone()),
+                    Cell::from(instance.state.clone()).style(state_style),
+                    Cell::from(instance.private_ip.clone().unwrap_or_default()),
+                ])
+            })
+            .collect();
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(8),  // SSM Status
+                Constraint::Min(20),    // Name
+                Constraint::Length(20), // Instance ID
+                Constraint::Length(10), // State
+                Constraint::Length(15), // Private IP
+            ],
+        )
+        .header(
+            Row::new(vec!["SSM", "Name", "Instance ID", "State", "Private IP"])
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .bottom_margin(1),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("EC2 Instances"),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(catppuccin_color(self.theme.colors.surface0))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+        f.render_stateful_widget(table, chunks[1], &mut self.ssm_list_state);
+
+        // Help bar
+        let help = Paragraph::new(
+            "↑↓/jk: Navigate | Enter: Start Session | y: Copy Command | r: Refresh | q/Esc: Back",
+        )
+        .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
+        f.render_widget(help, chunks[2]);
     }
 }

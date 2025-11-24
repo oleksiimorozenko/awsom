@@ -26,6 +26,8 @@ pub enum AppState {
     ConfirmationDialog { title: String, message: Vec<String> },
     /// View profile details
     ViewProfile { details: Vec<(String, String)> },
+    /// SSM browser - browse EC2 instances for the current profile
+    SsmBrowser,
 }
 
 /// Steps for static credential input wizard
