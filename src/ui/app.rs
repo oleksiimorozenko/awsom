@@ -289,15 +289,19 @@ impl App {
                 }
             };
 
-            if should_auto_refresh
-                && self.state == AppState::Main
-                && self.sso_token.is_some()
-                && !self.accounts.is_empty()
-            {
-                tracing::debug!("Auto-refreshing account list (1 minute interval)");
+            if should_auto_refresh && self.state == AppState::Main && !self.accounts.is_empty() {
                 self.last_auto_refresh = Some(now);
-                if let Err(e) = self.load_accounts().await {
-                    tracing::warn!("Auto-refresh failed: {}", e);
+
+                if self.sso_token.is_some() {
+                    // Full refresh with AWS API
+                    tracing::debug!("Auto-refreshing account list (1 minute interval)");
+                    if let Err(e) = self.load_accounts().await {
+                        tracing::warn!("Auto-refresh failed: {}", e);
+                    }
+                } else {
+                    // Light refresh: just update credential statuses from local files
+                    tracing::debug!("Auto-refreshing credential statuses from local files");
+                    self.refresh_credential_statuses();
                 }
             }
 
@@ -2862,6 +2866,60 @@ impl App {
                 tracing::warn!("Failed to save profiles to cache: {}", e);
             }
         }
+    }
+
+    /// Light-weight refresh: update credential statuses from local files
+    /// without making AWS API calls. Used for auto-refresh when no SSO session is active.
+    fn refresh_credential_statuses(&mut self) {
+        let statuses = match crate::aws_config::list_profile_statuses() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to refresh credential statuses: {}", e);
+                return;
+            }
+        };
+
+        // Build a map of profile_name -> (is_active, expiration)
+        let status_map: std::collections::HashMap<
+            String,
+            (bool, Option<chrono::DateTime<chrono::Utc>>),
+        > = statuses
+            .into_iter()
+            .map(|s| {
+                let is_active =
+                    s.has_credentials && s.expiration.map_or(true, |exp| exp > chrono::Utc::now());
+                (s.profile_name, (is_active, s.expiration))
+            })
+            .collect();
+
+        // Update existing accounts with new statuses
+        for profile in &mut self.accounts {
+            match profile {
+                ProfileEntry::Sso(ref mut acct) => {
+                    if let Some(ref name) = acct.profile_name {
+                        if let Some(&(is_active, expiration)) = status_map.get(name) {
+                            acct.is_active = is_active;
+                            acct.expiration = expiration;
+                        }
+                    }
+                }
+                ProfileEntry::Static { profile_name, .. } => {
+                    // Static profiles don't expire, but check if they exist
+                    if let Some(&(is_active, _)) = status_map.get(profile_name) {
+                        // Static credentials are always active if they exist
+                        let _ = is_active; // Just check presence
+                    }
+                }
+                ProfileEntry::Incomplete { .. } => {
+                    // Incomplete profiles have no credentials to refresh
+                }
+            }
+        }
+
+        tracing::debug!(
+            "Refreshed credential statuses for {} profiles",
+            self.accounts.len()
+        );
     }
 
     async fn load_accounts(&mut self) -> Result<()> {
