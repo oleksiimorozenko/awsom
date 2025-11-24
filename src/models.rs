@@ -488,4 +488,178 @@ mod tests {
         assert_eq!(CredentialType::Static, CredentialType::Static);
         assert_ne!(CredentialType::Sso, CredentialType::Static);
     }
+
+    #[test]
+    fn test_sso_token_can_refresh() {
+        // Token with all refresh fields can refresh
+        let refreshable_token = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_token: Some("refresh".to_string()),
+            client_id: Some("client_id".to_string()),
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(refreshable_token.can_refresh());
+
+        // Token missing refresh_token cannot refresh
+        let no_refresh_token = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_token: None,
+            client_id: Some("client_id".to_string()),
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(!no_refresh_token.can_refresh());
+
+        // Token missing client_id cannot refresh
+        let no_client_id = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_token: Some("refresh".to_string()),
+            client_id: None,
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(!no_client_id.can_refresh());
+
+        // Token missing client_secret cannot refresh
+        let no_client_secret = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1),
+            refresh_token: Some("refresh".to_string()),
+            client_id: Some("client_id".to_string()),
+            client_secret: None,
+            region: None,
+            start_url: None,
+        };
+        assert!(!no_client_secret.can_refresh());
+    }
+
+    #[test]
+    fn test_sso_token_needs_refresh() {
+        // Token expiring in 3 minutes needs refresh (threshold is 5 minutes)
+        let expiring_soon = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::minutes(3),
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+            region: None,
+            start_url: None,
+        };
+        assert!(expiring_soon.needs_refresh());
+
+        // Token expiring in 10 minutes doesn't need refresh
+        let not_expiring = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+            region: None,
+            start_url: None,
+        };
+        assert!(!not_expiring.needs_refresh());
+
+        // Already expired token needs refresh
+        let expired = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() - Duration::minutes(5),
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+            region: None,
+            start_url: None,
+        };
+        assert!(expired.needs_refresh());
+    }
+
+    #[test]
+    fn test_sso_token_should_auto_refresh() {
+        // Token that needs refresh AND can refresh should auto-refresh
+        let should_refresh = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::minutes(3),
+            refresh_token: Some("refresh".to_string()),
+            client_id: Some("client_id".to_string()),
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(should_refresh.should_auto_refresh());
+
+        // Token that needs refresh but cannot refresh should NOT auto-refresh
+        let needs_but_cant = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::minutes(3),
+            refresh_token: None, // Missing refresh token
+            client_id: Some("client_id".to_string()),
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(!needs_but_cant.should_auto_refresh());
+
+        // Token that can refresh but doesn't need to should NOT auto-refresh
+        let can_but_doesnt_need = SsoToken {
+            access_token: "test".to_string(),
+            expires_at: Utc::now() + Duration::hours(1), // 60 mins > 5 min threshold
+            refresh_token: Some("refresh".to_string()),
+            client_id: Some("client_id".to_string()),
+            client_secret: Some("client_secret".to_string()),
+            region: None,
+            start_url: None,
+        };
+        assert!(!can_but_doesnt_need.should_auto_refresh());
+    }
+
+    #[test]
+    fn test_role_credentials_expiration_display() {
+        // Test hours display (>60 mins shows "Xh Ym")
+        let hours_creds = RoleCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::hours(2) + Duration::minutes(30),
+        };
+        let display = hours_creds.expiration_display();
+        assert!(display.contains("2h"));
+        assert!(display.contains("m")); // remaining minutes
+
+        // Test minutes display (<=60 mins shows "Xm Ys")
+        let mins_creds = RoleCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::minutes(45),
+        };
+        let display = mins_creds.expiration_display();
+        assert!(display.contains("m"));
+        assert!(display.contains("s"));
+
+        // Test seconds display (when less than a minute)
+        let secs_creds = RoleCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() + Duration::seconds(30),
+        };
+        let display = secs_creds.expiration_display();
+        assert!(display.contains("s"));
+        assert!(!display.contains("m")); // no minutes when under 1 min
+
+        // Test expired display
+        let expired_creds = RoleCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+            expiration: Utc::now() - Duration::minutes(5),
+        };
+        assert_eq!(expired_creds.expiration_display(), "EXPIRED");
+    }
 }
