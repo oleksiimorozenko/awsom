@@ -5281,16 +5281,24 @@ impl App {
             return;
         }
 
-        // Get region from profile
-        let region = self
-            .get_selected_profile_name()
-            .and_then(|p| crate::aws_config::get_profile_region(&p).ok().flatten())
+        // Get profile name and region
+        let profile_name = match self.get_selected_profile_name() {
+            Some(p) => p,
+            None => {
+                self.status_message = Some("No profile selected".to_string());
+                return;
+            }
+        };
+
+        let region = crate::aws_config::get_profile_region(&profile_name)
+            .ok()
+            .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
 
-        // Create a temporary client just to get the command/start session
+        // Create command with AWS_PROFILE prefix
         let cmd = format!(
-            "aws ssm start-session --target {} --region {}",
-            instance.instance_id, region
+            "AWS_PROFILE={} aws ssm start-session --target {} --region {}",
+            profile_name, instance.instance_id, region
         );
 
         // Try to open terminal with session
@@ -5336,14 +5344,22 @@ impl App {
             }
         };
 
-        let region = self
-            .get_selected_profile_name()
-            .and_then(|p| crate::aws_config::get_profile_region(&p).ok().flatten())
+        let profile_name = match self.get_selected_profile_name() {
+            Some(p) => p,
+            None => {
+                self.status_message = Some("No profile selected".to_string());
+                return;
+            }
+        };
+
+        let region = crate::aws_config::get_profile_region(&profile_name)
+            .ok()
+            .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
 
         let cmd = format!(
-            "aws ssm start-session --target {} --region {}",
-            instance.instance_id, region
+            "AWS_PROFILE={} aws ssm start-session --target {} --region {}",
+            profile_name, instance.instance_id, region
         );
 
         // Show the command in status (clipboard requires additional deps)
@@ -5448,7 +5464,7 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start Session | y: Copy Command | r: Refresh | q/Esc: Back",
+            "↑↓/jk: Navigate | Enter: Start session | y: Copy command | r: Refresh | q/Esc: Back",
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);
