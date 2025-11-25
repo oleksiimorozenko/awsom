@@ -348,6 +348,9 @@ impl App {
             if should_auto_refresh && self.state == AppState::Main && !self.accounts.is_empty() {
                 self.last_auto_refresh = Some(now);
 
+                // Always refresh SSO session statuses (checks token expiration)
+                self.load_all_sso_sessions().await;
+
                 if self.sso_token.is_some() {
                     // Full refresh with AWS API
                     tracing::debug!("Auto-refreshing account list (1 minute interval)");
