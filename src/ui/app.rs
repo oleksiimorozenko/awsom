@@ -7,6 +7,7 @@ use crate::models::{AccountRole, SsoInstance, SsoToken};
 use crate::sso_config;
 use catppuccin::Flavor;
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -30,6 +31,7 @@ use tokio::sync::mpsc;
 use super::state::{
     AppState, DefaultsConfigStep, NewProfileConfigStep, SsoConfigStep, StaticCredentialStep,
 };
+use super::symbols;
 use super::theme::catppuccin_color;
 use super::types::{
     AccountRoleWithStatus, ActivePane, ConfirmAction, LoginResult, ProfileEntry, SsoSessionInfo,
@@ -44,6 +46,8 @@ enum SsmSortOrder {
     Name,
     /// Sort by instance ID (alphabetical)
     InstanceId,
+    /// Sort by instance state (running first)
+    State,
     /// Sort by private IP address (alphabetical)
     PrivateIp,
 }
@@ -53,7 +57,8 @@ impl SsmSortOrder {
         match self {
             Self::None => Self::Name,
             Self::Name => Self::InstanceId,
-            Self::InstanceId => Self::PrivateIp,
+            Self::InstanceId => Self::State,
+            Self::State => Self::PrivateIp,
             Self::PrivateIp => Self::None,
         }
     }
@@ -63,8 +68,23 @@ impl SsmSortOrder {
             Self::None => "unsorted",
             Self::Name => "name",
             Self::InstanceId => "ID",
+            Self::State => "state",
             Self::PrivateIp => "IP",
         }
+    }
+}
+
+/// Helper function to assign priority for state-based sorting
+/// Lower values appear first in the sorted list
+fn state_priority(state: &str) -> u8 {
+    match state {
+        "running" => 0,  // Running instances first
+        "pending" => 1,  // Starting instances
+        "stopping" => 2, // Stopping instances
+        "stopped" => 3,  // Stopped instances
+        "shutting-down" => 4,
+        "unknown" => 5, // Unknown states last
+        _ => 6,         // Any other state
     }
 }
 
@@ -378,7 +398,7 @@ impl App {
                         {
                             self.handle_ctrl_c();
                         } else {
-                            self.handle_key(key.code).await?;
+                            self.handle_key(key.code, terminal).await?;
                         }
                     }
                 }
@@ -415,7 +435,11 @@ impl App {
                 self.sso_instance = Some(instance);
                 self.sso_token = Some(token);
                 self.state = AppState::Main;
-                self.status_message = Some(format!("✓ Logged in to {}", session_name));
+                self.status_message = Some(format!(
+                    "{} Logged in to {}",
+                    symbols::check_mark(),
+                    session_name
+                ));
 
                 // Load accounts for this session
                 self.load_accounts().await?;
@@ -442,7 +466,11 @@ impl App {
         Ok(())
     }
 
-    async fn handle_key(&mut self, key: KeyCode) -> Result<()> {
+    async fn handle_key(
+        &mut self,
+        key: KeyCode,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> Result<()> {
         match self.state {
             AppState::Main => self.handle_main_key(key).await?,
             AppState::Help => {
@@ -491,7 +519,7 @@ impl App {
                 self.state = AppState::Main;
             }
             AppState::SsmBrowser => {
-                self.handle_ssm_browser_key(key).await?;
+                self.handle_ssm_browser_key(key, terminal).await?;
             }
             AppState::ViewInstanceTags { .. } => {
                 // Any key returns to SSM browser
@@ -896,7 +924,11 @@ impl App {
                 }
             }
 
-            self.status_message = Some(format!("✓ Logged out from {}", session.session_name));
+            self.status_message = Some(format!(
+                "{} Logged out from {}",
+                symbols::check_mark(),
+                session.session_name
+            ));
         }
         Ok(())
     }
@@ -946,7 +978,8 @@ impl App {
                         match crate::aws_config::delete_static_credentials(&profile_name) {
                             Ok(()) => {
                                 self.status_message = Some(format!(
-                                    "✓ Deleted static credential profile '{}'",
+                                    "{} Deleted static credential profile '{}'",
+                                    symbols::check_mark(),
                                     profile_name
                                 ));
 
@@ -1105,7 +1138,8 @@ impl App {
                             self.status_message = Some(format!("Error stopping session: {}", e));
                         } else {
                             self.status_message = Some(format!(
-                                "✓ Stopped session for profile '{}' (profile preserved)",
+                                "{} Stopped session for profile '{}' (profile preserved)",
+                                symbols::check_mark(),
                                 existing_profile
                             ));
                             // Reload accounts to update indicators
@@ -1285,7 +1319,8 @@ impl App {
                             match crate::aws_config::rename_profile(&existing_profile, "default") {
                                 Ok(()) => {
                                     self.status_message = Some(format!(
-                                        "✓ Set '{}' as default profile",
+                                        "{} Set '{}' as default profile",
+                                        symbols::check_mark(),
                                         existing_profile
                                     ));
                                     // Reload accounts to update indicators
@@ -1520,7 +1555,8 @@ impl App {
                         ) {
                             Ok(()) => {
                                 self.status_message = Some(format!(
-                                    "✓ SSO session '{}' saved to ~/.aws/config",
+                                    "{} SSO session '{}' saved to ~/.aws/config",
+                                    symbols::check_mark(),
                                     session_name
                                 ));
                                 self.state = AppState::Main;
@@ -1705,7 +1741,8 @@ impl App {
                         match crate::aws_config::write_static_credentials(profile_name, &creds) {
                             Ok(()) => {
                                 self.status_message = Some(format!(
-                                    "✓ Static credentials '{}' saved to ~/.aws/credentials",
+                                    "{} Static credentials '{}' saved to ~/.aws/credentials",
+                                    symbols::check_mark(),
                                     profile_name
                                 ));
                                 self.state = AppState::Main;
@@ -1883,10 +1920,10 @@ impl App {
 
                         match crate::aws_config::write_awsom_defaults(&config) {
                             Ok(()) => {
-                                self.status_message = Some(
-                                    "✓ Default settings saved to [profile awsom-defaults]"
-                                        .to_string(),
-                                );
+                                self.status_message = Some(format!(
+                                    "{} Default settings saved to [profile awsom-defaults]",
+                                    symbols::check_mark()
+                                ));
 
                                 // Now proceed to new profile configuration
                                 if let Some(account) = &self.pending_role {
@@ -2183,7 +2220,8 @@ impl App {
                             match crate::aws_config::rename_profile(&from_profile, "default") {
                                 Ok(()) => {
                                     self.status_message = Some(format!(
-                                        "✓ Set '{}' as default profile",
+                                        "{} Set '{}' as default profile",
+                                        symbols::check_mark(),
                                         from_profile
                                     ));
                                     // Reload accounts to update indicators
@@ -2251,8 +2289,11 @@ impl App {
                                         .select(Some(self.sso_sessions.len() - 1));
                                 }
 
-                                self.status_message =
-                                    Some(format!("✓ Deleted session '{}'", session_name));
+                                self.status_message = Some(format!(
+                                    "{} Deleted session '{}'",
+                                    symbols::check_mark(),
+                                    session_name
+                                ));
                             }
                         }
                     }
@@ -2518,7 +2559,8 @@ impl App {
                         Ok(()) => {
                             self.state = AppState::Main;
                             let mut status_msg = format!(
-                                "✓ Saved profile '{}' (expires in {})",
+                                "{} Saved profile '{}' (expires in {})",
+                                symbols::check_mark(),
                                 profile_name,
                                 creds.expiration_display()
                             );
@@ -3100,7 +3142,8 @@ impl App {
 
                     refreshed_count += 1;
                     tracing::info!(
-                        "✓ Refreshed credentials for '{}' (expires in {})",
+                        "{} Refreshed credentials for '{}' (expires in {})",
+                        symbols::check_mark(),
                         profile_name,
                         new_creds.expiration_display()
                     );
@@ -3117,7 +3160,8 @@ impl App {
 
         if refreshed_count > 0 {
             self.status_message = Some(format!(
-                "✓ Auto-refreshed {} credential(s)",
+                "{} Auto-refreshed {} credential(s)",
+                symbols::check_mark(),
                 refreshed_count
             ));
         }
@@ -3946,8 +3990,10 @@ impl App {
                             match crate::console::open_console(&creds, region) {
                                 Ok(()) => {
                                     self.status_message = Some(format!(
-                                        "✓ Opened AWS Console for {} / {}",
-                                        account.account_name, account.role_name
+                                        "{} Opened AWS Console for {} / {}",
+                                        symbols::check_mark(),
+                                        account.account_name,
+                                        account.role_name
                                     ));
                                 }
                                 Err(e) => {
@@ -4022,7 +4068,7 @@ impl App {
         // Header with optional status message
         let header_text = if let Some(ref msg) = self.status_message {
             // Add spinner if message indicates loading
-            let spinner_frames: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let spinner_frames = symbols::spinner_frames();
             let is_loading =
                 msg.contains("Loading") || msg.contains("Refreshing") || msg.contains("...");
             if is_loading {
@@ -4054,7 +4100,7 @@ impl App {
 
                         // Default marker
                         let default_mark = if account_with_status.is_default {
-                            "✓"
+                            symbols::check_mark()
                         } else {
                             ""
                         };
@@ -4087,7 +4133,11 @@ impl App {
                             };
 
                         // Status indicator based on actual expiration state
-                        let status = if is_actually_active { "🟢" } else { "🔴" };
+                        let status = if is_actually_active {
+                            symbols::status_active()
+                        } else {
+                            symbols::status_inactive()
+                        };
 
                         // Profile name or "N/A"
                         let profile_display =
@@ -4117,10 +4167,14 @@ impl App {
                         ..
                     } => {
                         // Default marker
-                        let default_mark = if *is_default { "✓" } else { "" };
+                        let default_mark = if *is_default {
+                            symbols::check_mark()
+                        } else {
+                            ""
+                        };
 
                         // Static credentials are always active (no expiration)
-                        let status = "🟢";
+                        let status = symbols::status_active();
 
                         Row::new(vec![
                             Cell::new(Text::from("STATIC").alignment(Alignment::Center)),
@@ -4137,7 +4191,7 @@ impl App {
                     }
                     ProfileEntry::Incomplete { profile_name, .. } => {
                         // Incomplete profiles have no credentials
-                        let status = "⚠";
+                        let status = symbols::warning();
 
                         Row::new(vec![
                             Cell::new(Text::from("CONFIG").alignment(Alignment::Center)),
@@ -4237,8 +4291,8 @@ impl App {
         // Render scrollbar for accounts pane
         if !self.accounts.is_empty() {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(Some("↑"))
-                .end_symbol(Some("↓"));
+                .begin_symbol(Some(symbols::arrow_up()))
+                .end_symbol(Some(symbols::arrow_down()));
 
             let mut scrollbar_state = ScrollbarState::new(self.accounts.len())
                 .position(self.accounts_list_state.selected().unwrap_or(0));
@@ -4265,7 +4319,9 @@ impl App {
 
         let help_lines = vec![
             Line::from(vec![Span::raw(format!(
-                "q:quit | ?:help | Tab:switch pane | ↑↓/jk:navigate | {}",
+                "q:quit | ?:help | Tab:switch pane | {}{}/jk:navigate | {}",
+                symbols::arrow_up(),
+                symbols::arrow_down(),
                 enter_action
             ))]),
             Line::from(vec![
@@ -4331,7 +4387,11 @@ impl App {
                 };
 
                 // Status indicator based on actual expiration state
-                let status = if is_actually_active { "🟢" } else { "🔴" };
+                let status = if is_actually_active {
+                    symbols::status_active()
+                } else {
+                    symbols::status_inactive()
+                };
 
                 // Add filter marker if this session is filtered
                 let session_name_display =
@@ -4404,8 +4464,8 @@ impl App {
         // Render scrollbar for sessions pane
         if !self.sso_sessions.is_empty() {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(Some("↑"))
-                .end_symbol(Some("↓"));
+                .begin_symbol(Some(symbols::arrow_up()))
+                .end_symbol(Some(symbols::arrow_down()));
 
             let mut scrollbar_state = ScrollbarState::new(self.sso_sessions.len())
                 .position(self.sessions_list_state.selected().unwrap_or(0));
@@ -4432,8 +4492,14 @@ impl App {
             Line::from(""),
             Line::from("Navigation:"),
             Line::from("  Tab         - Switch between Sessions and Profiles panes"),
-            Line::from("  ↑, k        - Move selection up"),
-            Line::from("  ↓, j        - Move selection down"),
+            Line::from(format!(
+                "  {}, k        - Move selection up",
+                symbols::arrow_up()
+            )),
+            Line::from(format!(
+                "  {}, j        - Move selection down",
+                symbols::arrow_down()
+            )),
             Line::from(""),
             Line::from("Sessions Pane:"),
             Line::from("  Enter       - Login/Logout selected SSO session"),
@@ -4506,9 +4572,9 @@ impl App {
     }
 
     fn draw_loading_screen(&mut self, f: &mut Frame) {
-        // Spinner frames for animation (Braille pattern spinner)
-        const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinner_frame = SPINNER_FRAMES[self.tick_count as usize % SPINNER_FRAMES.len()];
+        // Spinner frames for animation
+        let spinner_frames = symbols::spinner_frames();
+        let spinner_frame = spinner_frames[self.tick_count as usize % spinner_frames.len()];
 
         // Poll device_auth_info from watch receiver if available
         if let Some(ref rx) = self.device_auth_rx {
@@ -4691,9 +4757,11 @@ impl App {
         f.render_widget(input, chunks[2]);
 
         // Instructions
-        let instructions = Paragraph::new(
-            "Enter: Save | Esc: Cancel | ←→: Move cursor | Home/End: Jump | Type to edit",
-        )
+        let instructions = Paragraph::new(format!(
+            "Enter: Save | Esc: Cancel | {}{}: Move cursor | Home/End: Jump | Type to edit",
+            symbols::arrow_left(),
+            symbols::arrow_right()
+        ))
         .style(Style::default().fg(Color::Gray));
         f.render_widget(instructions, chunks[4]);
     }
@@ -4778,8 +4846,12 @@ impl App {
         f.render_widget(input, chunks[2]);
 
         // Help
-        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
-            .style(Style::default().fg(Color::Gray));
+        let help = Paragraph::new(format!(
+            "Enter: Next | Esc: Cancel | {}{}: Move cursor | Type to edit",
+            symbols::arrow_left(),
+            symbols::arrow_right()
+        ))
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help, chunks[4]);
     }
 
@@ -4859,8 +4931,12 @@ impl App {
         f.render_widget(input, chunks[2]);
 
         // Help
-        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
-            .style(Style::default().fg(Color::Gray));
+        let help = Paragraph::new(format!(
+            "Enter: Next | Esc: Cancel | {}{}: Move cursor | Type to edit",
+            symbols::arrow_left(),
+            symbols::arrow_right()
+        ))
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help, chunks[4]);
     }
 
@@ -4933,7 +5009,10 @@ impl App {
             StaticCredentialStep::SecretAccessKey | StaticCredentialStep::SessionToken
         ) {
             info_text.push(Line::from(Span::styled(
-                "⚠  WARNING: This will be stored in plaintext in ~/.aws/credentials",
+                format!(
+                    "{}  WARNING: This will be stored in plaintext in ~/.aws/credentials",
+                    symbols::warning()
+                ),
                 Style::default().fg(catppuccin_color(self.theme.colors.red)),
             )));
         } else {
@@ -4983,8 +5062,12 @@ impl App {
         f.render_widget(input, chunks[2]);
 
         // Help
-        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
-            .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
+        let help = Paragraph::new(format!(
+            "Enter: Next | Esc: Cancel | {}{}: Move cursor | Type to edit",
+            symbols::arrow_left(),
+            symbols::arrow_right()
+        ))
+        .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[4]);
     }
 
@@ -5085,8 +5168,12 @@ impl App {
         f.render_widget(input, chunks[2]);
 
         // Help
-        let help = Paragraph::new("Enter: Next | Esc: Cancel | ←→: Move cursor | Type to edit")
-            .style(Style::default().fg(Color::Gray));
+        let help = Paragraph::new(format!(
+            "Enter: Next | Esc: Cancel | {}{}: Move cursor | Type to edit",
+            symbols::arrow_left(),
+            symbols::arrow_right()
+        ))
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help, chunks[4]);
     }
 
@@ -5211,15 +5298,20 @@ impl App {
     }
 
     /// Handle key events in SSM browser
-    async fn handle_ssm_browser_key(&mut self, key: KeyCode) -> Result<()> {
+    async fn handle_ssm_browser_key(
+        &mut self,
+        key: KeyCode,
+        terminal: &mut ratatui::Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
         // If in search mode, handle search input
         if self.ssm_search_mode {
             match key {
                 KeyCode::Esc => {
-                    // Exit search mode
+                    // Exit search mode and clear filter
                     self.ssm_search_mode = false;
+                    self.ssm_filter.clear();
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Tab => {
                     // Exit search mode and keep filter
                     self.ssm_search_mode = false;
                 }
@@ -5227,12 +5319,26 @@ impl App {
                     // Delete last character
                     self.ssm_filter.pop();
                 }
+                KeyCode::Up => {
+                    // Navigate up while filtering
+                    self.previous_ssm_instance();
+                }
+                KeyCode::Down => {
+                    // Navigate down while filtering
+                    self.next_ssm_instance();
+                }
                 KeyCode::Char(c) => {
                     // Add character to filter
                     self.ssm_filter.push(c);
                 }
                 _ => {}
             }
+            return Ok(());
+        }
+
+        // If filter is active and Esc is pressed, clear the filter
+        if !self.ssm_filter.is_empty() && matches!(key, KeyCode::Esc) {
+            self.ssm_filter.clear();
             return Ok(());
         }
 
@@ -5260,7 +5366,7 @@ impl App {
             }
             KeyCode::Enter => {
                 // Start SSM session
-                self.start_ssm_session()?;
+                self.start_ssm_session(terminal)?;
             }
             KeyCode::Char('y') => {
                 // Copy command to clipboard (just show it for now)
@@ -5386,6 +5492,13 @@ impl App {
             SsmSortOrder::InstanceId => {
                 instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
             }
+            SsmSortOrder::State => {
+                instances.sort_by(|a, b| {
+                    state_priority(&a.state)
+                        .cmp(&state_priority(&b.state))
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
             SsmSortOrder::PrivateIp => {
                 instances.sort_by(|a, b| match (&a.private_ip, &b.private_ip) {
                     (Some(a_ip), Some(b_ip)) => a_ip.cmp(b_ip),
@@ -5416,7 +5529,10 @@ impl App {
         })
     }
 
-    fn start_ssm_session(&mut self) -> Result<()> {
+    fn start_ssm_session(
+        &mut self,
+        terminal: &mut ratatui::Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
         let instance = match self.get_selected_ssm_instance() {
             Some(i) => i.clone(),
             None => {
@@ -5451,6 +5567,7 @@ impl App {
         // Suspend TUI before running SSM session
         disable_raw_mode()?;
         execute!(std::io::stdout(), LeaveAlternateScreen)?;
+        execute!(std::io::stdout(), cursor::Show)?;
 
         // Install panic hook to restore terminal if something goes wrong
         let original_hook = std::panic::take_hook();
@@ -5459,6 +5576,7 @@ impl App {
         std::panic::set_hook(Box::new(move |panic_info| {
             let _ = disable_raw_mode();
             let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(std::io::stdout(), cursor::Show);
             hook_for_panic(panic_info);
         }));
 
@@ -5501,6 +5619,12 @@ impl App {
         // Resume TUI
         execute!(std::io::stdout(), EnterAlternateScreen)?;
         enable_raw_mode()?;
+
+        // Clear terminal buffer to force full redraw
+        terminal.clear()?;
+
+        // Force immediate redraw to prevent blank screen
+        terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
 
         // Set status message based on result
         match status {
@@ -5558,7 +5682,11 @@ impl App {
         match arboard::Clipboard::new() {
             Ok(mut clipboard) => match clipboard.set_text(&cmd) {
                 Ok(_) => {
-                    self.status_message = Some(format!("✓ Copied to clipboard: {}", cmd));
+                    self.status_message = Some(format!(
+                        "{} Copied to clipboard: {}",
+                        symbols::check_mark(),
+                        cmd
+                    ));
                 }
                 Err(e) => {
                     self.status_message = Some(format!("Failed to copy: {} (Command: {})", e, cmd));
@@ -5588,7 +5716,7 @@ impl App {
             // Show search prompt when in search mode
             format!("Search: {}_", self.ssm_filter)
         } else if self.ssm_loading {
-            let spinner_frames: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let spinner_frames = symbols::spinner_frames();
             let spinner = spinner_frames[self.tick_count as usize % spinner_frames.len()];
             format!("{} SSM Browser - Loading instances...", spinner)
         } else {
@@ -5697,7 +5825,7 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start session | v: View tags | y: Copy command | /: Search | s: Sort | o: Toggle offline | r: Refresh | q/Esc: Back",
+            format!("{}{}/jk: Navigate | Enter: Start session | v: View tags | y: Copy command | /: Search | s: Sort | o: Toggle offline | r: Refresh | q/Esc: Back", symbols::arrow_up(), symbols::arrow_down()),
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);

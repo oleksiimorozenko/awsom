@@ -25,7 +25,7 @@ A modern, k9s-inspired Terminal User Interface (TUI) for managing AWS SSO sessio
 - **Profile Export**: Export credentials as environment variables or to ~/.aws/credentials
 - **AWS CLI Compatible**: Uses same cache directories and format as AWS CLI v2
 
-## No AWS CLI Required! 🎉
+## No AWS CLI Required!
 
 **awsom** is a standalone tool that does NOT require the AWS CLI to be installed. It uses the official AWS SDK for Rust to communicate directly with AWS services and manages your `~/.aws/config` and `~/.aws/credentials` files as plain text.
 
@@ -104,6 +104,46 @@ cargo install --path .
 
 - Rust 1.70+ (for building from source only)
 - AWS SSO enabled for your organization (no AWS CLI required - awsom handles configuration)
+
+### Terminal Symbol Display
+
+**awsom** uses Unicode symbols (🟢, 🔴, ✓) by default for the best visual experience. These work perfectly in most modern terminals including:
+- Modern [Windows Terminal](https://aka.ms/terminal)
+- PowerShell 7+
+- Most Linux and macOS terminals (Terminal.app, iTerm2, Alacritty, Kitty, etc.)
+
+**If you see broken symbols or boxes** (e.g., in cmd.exe, older terminals, or minimal environments), you can enable ASCII mode:
+
+**Unix/Linux/macOS:**
+```bash
+AWSOM_ASCII_SYMBOLS=true awsom
+```
+
+**PowerShell:**
+```powershell
+$env:AWSOM_ASCII_SYMBOLS="true"
+awsom
+```
+
+**Windows Command Prompt:**
+```cmd
+set AWSOM_ASCII_SYMBOLS=true
+awsom
+```
+
+**Make it permanent:**
+
+*Unix shells (add to ~/.bashrc, ~/.zshrc, etc.):*
+```bash
+export AWSOM_ASCII_SYMBOLS=true
+```
+
+*PowerShell (add to profile):*
+```powershell
+[Environment]::SetEnvironmentVariable("AWSOM_ASCII_SYMBOLS", "true", "User")
+```
+
+With ASCII mode enabled, symbols are displayed as `[+]`, `[-]`, `[x]`, `[!]` instead of Unicode emojis.
 
 ### Shell Completion
 
