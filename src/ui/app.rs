@@ -5179,26 +5179,18 @@ impl App {
                 KeyCode::Esc => {
                     // Exit search mode
                     self.ssm_search_mode = false;
-                    self.status_message = None;
                 }
                 KeyCode::Enter => {
                     // Exit search mode and keep filter
                     self.ssm_search_mode = false;
-                    self.status_message = None;
                 }
                 KeyCode::Backspace => {
                     // Delete last character
                     self.ssm_filter.pop();
-                    if self.ssm_filter.is_empty() {
-                        self.status_message = Some("Search: _".to_string());
-                    } else {
-                        self.status_message = Some(format!("Search: {}_", self.ssm_filter));
-                    }
                 }
                 KeyCode::Char(c) => {
                     // Add character to filter
                     self.ssm_filter.push(c);
-                    self.status_message = Some(format!("Search: {}_", self.ssm_filter));
                 }
                 _ => {}
             }
@@ -5218,7 +5210,6 @@ impl App {
                 // Enter search mode
                 self.ssm_search_mode = true;
                 self.ssm_filter.clear();
-                self.status_message = Some("Search: _".to_string());
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 // Next instance
@@ -5404,7 +5395,7 @@ impl App {
             instance.name, instance.instance_id
         );
 
-        let status = std::process::Command::new("aws")
+        let mut child = std::process::Command::new("aws")
             .arg("ssm")
             .arg("start-session")
             .arg("--target")
@@ -5412,7 +5403,15 @@ impl App {
             .arg("--region")
             .arg(&region)
             .env("AWS_PROFILE", &profile_name)
-            .status();
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn();
+
+        let status = match child {
+            Ok(ref mut process) => process.wait(),
+            Err(e) => Err(e),
+        };
 
         // Restore original panic hook
         let _ = std::panic::take_hook();
@@ -5482,8 +5481,21 @@ impl App {
             profile_name, instance.instance_id, region
         );
 
-        // Show the command in status (clipboard requires additional deps)
-        self.status_message = Some(format!("Command: {}", cmd));
+        // Copy to clipboard
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => match clipboard.set_text(&cmd) {
+                Ok(_) => {
+                    self.status_message = Some(format!("✓ Copied to clipboard: {}", cmd));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Failed to copy: {} (Command: {})", e, cmd));
+                }
+            },
+            Err(e) => {
+                self.status_message =
+                    Some(format!("Clipboard unavailable: {} (Command: {})", e, cmd));
+            }
+        }
     }
 
     fn draw_ssm_browser(&mut self, f: &mut Frame) {
@@ -5499,7 +5511,10 @@ impl App {
             .split(f.area());
 
         // Header
-        let header_text = if self.ssm_loading {
+        let header_text = if self.ssm_search_mode {
+            // Show search prompt when in search mode
+            format!("Search: {}_", self.ssm_filter)
+        } else if self.ssm_loading {
             let spinner_frames: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
             let spinner = spinner_frames[self.tick_count as usize % spinner_frames.len()];
             format!("{} SSM Browser - Loading instances...", spinner)

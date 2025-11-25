@@ -57,6 +57,7 @@ dirs = "5.0"
 # Utilities
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+arboard = "3.4"
 webbrowser = "1.0"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 sha1 = "0.10"
