@@ -17,12 +17,16 @@ A modern, k9s-inspired Terminal User Interface (TUI) for managing AWS SSO sessio
 - **CLI Commands**: Full command-line interface for automation and scripting
 - **Session Management**: Create, edit, delete, and switch SSO sessions via CLI or TUI
 - **Multi-Session Support**: Track multiple SSO sessions across different organizations
+- **SSM Browser**: Browse and connect to EC2 instances via AWS Systems Manager
+- **Auto-Refresh**: Automatic credential renewal before expiration
 - **Status Checking**: Programmatic session status for shell automation and scripting
 - **Expiry Tracking**: Real-time countdown timers for token and credential expiration
 - **Profile Management**: Create, rename, and manage AWS credential profiles
 - **Console Access**: One-click federated sign-in to AWS Console in your browser
 - **Default Profile**: Set and switch default AWS profile easily
 - **Profile Export**: Export credentials as environment variables or to ~/.aws/credentials
+- **Disk Caching**: Smart profile caching with automatic invalidation
+- **Symbol Compatibility**: Works in any terminal with ASCII fallback mode
 - **AWS CLI Compatible**: Uses same cache directories and format as AWS CLI v2
 
 ## No AWS CLI Required!
@@ -36,6 +40,27 @@ This means:
 - **Portable**: Easy to install on any system without package managers
 
 If you have existing AWS CLI configurations, awsom will read and respect them. If you don't, awsom will create everything you need from scratch.
+
+### SSM Browser (Press 'v')
+
+Browse and connect to EC2 instances via AWS Systems Manager:
+- View all EC2 instances across your AWS accounts
+- Filter by name, instance ID, state, or IP address
+- Sort by name, ID, state (running first), or IP
+- One-key connection to SSM sessions (requires AWS Session Manager Plugin)
+- View instance tags, IP addresses, and real-time status
+- Toggle visibility of offline/stopped instances
+- Real-time search with '/' key, navigate with arrow keys while searching
+- Tab or Enter to exit search mode, Esc to clear filter
+
+**Requirements:**
+- AWS Systems Manager Session Manager Plugin must be installed
+- EC2 instances must have SSM Agent installed and running
+- IAM permissions: `ssm:StartSession`, `ec2:DescribeInstances`
+
+**Installation of Session Manager Plugin:**
+- macOS: `brew install --cask session-manager-plugin`
+- Linux/Windows: See [AWS Session Manager Plugin installation guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
 
 ## Installation
 
@@ -232,10 +257,21 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 - `↓`/`j` - Move selection down
 - `Enter` - Start/stop session for selected role (activates or invalidates credentials)
 - `e` - Edit profile configuration
-- `v` - View profile details
+- `v` - View SSM Browser (EC2 instance manager)
 - `d` - Set selected role's profile as default
 - `D` - Delete selected profile
 - `c` - Open AWS Console in browser for selected role
+
+**In SSM Browser:**
+- `/` - Start search/filter
+- `Up/Down` or `j/k` - Navigate instances
+- `Enter` - Connect to instance via SSM
+- `y` - Copy SSM command to clipboard
+- `s` - Cycle sort order (unsorted → name → ID → state → IP)
+- `o` - Toggle offline instances visibility
+- `r` - Refresh instance list
+- `v` - View instance tags
+- `Esc` or `q` - Return to main screen
 
 **Features:**
 - **Visual Indicators**: 🟢 Active sessions / 🔴 Inactive / ⚠ Incomplete
@@ -252,6 +288,17 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 2. Press `l` to login
 3. Follow the interactive prompts to configure your SSO (if not already configured)
 4. Authenticate in your browser and start managing your AWS sessions!
+
+#### 4. Browse EC2 Instances (Optional)
+
+Press `v` to open the SSM Browser and view your EC2 instances:
+
+- See all instances across your accounts with real-time status
+- Filter and sort to find the right instance
+- Press Enter to connect via AWS Systems Manager
+- Copy SSM commands with `y` for use in scripts
+
+**Note:** Requires AWS Session Manager Plugin to be installed for connecting to instances.
 
 ## CLI Commands
 
@@ -530,12 +577,17 @@ awsom/
 │   ├── aws_config.rs   # AWS credentials file management
 │   ├── console/        # AWS Console federated sign-in
 │   ├── session/        # Session management
+│   ├── ssm/            # EC2 instance browsing via AWS Systems Manager
+│   │   ├── client.rs   # SSM/EC2 SDK integration
+│   │   └── mod.rs
 │   ├── ui/             # TUI components (Ratatui)
-│   │   └── app.rs      # Main TUI application
+│   │   ├── app.rs      # Main TUI application
+│   │   └── symbols.rs  # Platform-agnostic symbol rendering
 │   ├── cli/            # CLI commands
 │   │   └── commands/   # Individual command implementations
 │   ├── config/         # Configuration management
 │   ├── expiry/         # Expiry tracking utilities
+│   ├── cache.rs        # Disk-based profile cache
 │   ├── models.rs       # Core data models
 │   ├── error.rs        # Error types
 │   └── main.rs         # Application entry point
@@ -617,6 +669,27 @@ awsom/
 3. **Get Credentials**: Fetch temporary credentials for selected role
 4. **Cache Credentials**: Store in `~/.aws/cli/cache/`
 
+### Auto-Refresh Mechanism
+
+- Monitors SSO tokens and role credentials for expiration
+- Automatically refreshes credentials before they expire (when < 5 minutes remaining)
+- Detects external changes to credential files and updates UI in real-time
+- Background refresh runs every 60 seconds to maintain active sessions
+
+### Symbol Abstraction Layer
+
+- Platform-agnostic symbol rendering via `src/ui/symbols.rs`
+- Automatic fallback to ASCII symbols on incompatible terminals
+- Controlled via `AWSOM_ASCII_SYMBOLS` environment variable
+- Supports Unicode emojis (🟢, 🔴, ✓) and ASCII equivalents ([+], [-], [x])
+
+### SSM Integration
+
+- EC2 instance browsing and management through AWS Systems Manager
+- Real-time instance status tracking (online/offline)
+- Integrated tag viewing and filtering
+- Direct SSM session connection from TUI
+
 ## Building
 
 ```bash
@@ -684,9 +757,11 @@ This will show:
 
 ## Roadmap
 
-**Current Status: v0.8.0 - Multi-Profile Support! 🎉**
+**Current Status: v0.15.0 - Symbol Compatibility & SSM Browser! 🎉**
 
 All core features are now implemented and working:
+
+**Implemented Features:**
 - ✅ AWS SSO authentication with device flow
 - ✅ Full TUI interface with profile management
 - ✅ All CLI commands (`session`, `profile`, `completions`)
@@ -698,11 +773,16 @@ All core features are now implemented and working:
 - ✅ Configuration file support
 - ✅ Static credentials support (non-SSO profiles)
 - ✅ Incomplete profile detection (config-only profiles)
-- ✅ Smart disk cache with automatic invalidation
+- ✅ Smart disk cache with automatic invalidation (v0.7.0)
+- ✅ Account caching and session filtering (v0.6.0)
+- ✅ Auto-refresh for external credential changes (v0.12.0)
+- ✅ Automatic credential renewal before expiration (v0.13.0)
+- ✅ SSM Browser for EC2 instance management (v0.14.0)
+- ✅ Platform-agnostic symbol rendering with ASCII fallback (v0.15.0)
 
 **Future Enhancements:**
-- Background session refresh
 - Desktop notifications for expiring sessions
-- Multiple SSO instance support
 - Profile favorites/bookmarks
 - Session history and analytics
+- Multi-region SSM instance browsing
+- Enhanced filtering and search capabilities

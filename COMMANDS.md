@@ -60,10 +60,6 @@ awsom [GLOBAL OPTIONS]
 │       [--session-name <name>]   SSO session to use
 │       [--region <region>]       AWS region to open console in
 │
-├── import <name>             Import existing configs to awsom management
-│   [--section-type profile|sso-session]  Type to import (default: profile)
-│   [--force]                            Skip confirmation prompt
-│
 └── completions <shell>       Generate shell completion scripts
     [--show-install]          Show installation instructions
 
@@ -311,6 +307,41 @@ awsom profile exec --role-name Admin --account-name Production -- aws s3 ls
 | `SSH_TTY` | SSH terminal (headless detection) | `/dev/pts/0` |
 | `SSH_CONNECTION` | SSH connection (headless detection) | `192.168.1.100 ...` |
 | `TERM` | Terminal type (headless detection) | `xterm-256color` |
+
+## TUI-Only Features
+
+Some features are exclusively available in the interactive TUI (when running awsom without subcommands):
+
+### SSM Browser (Press 'v')
+
+Browse and connect to EC2 instances via AWS Systems Manager Session Manager.
+
+**Features:**
+- View all EC2 instances across your AWS accounts with real-time status
+- Filter instances by name, instance ID, state, or IP address
+- Sort by name, ID, state (running first), or IP
+- One-key connection to SSM sessions
+- View instance tags, IP addresses, and platform details
+- Toggle visibility of offline or stopped instances
+- Real-time search with `/` key, navigate with arrow keys while searching
+- Tab or Enter to exit search mode, Esc to clear filter
+- Copy SSM commands with `y` for use in scripts
+
+**Requirements:**
+- AWS Systems Manager Session Manager Plugin must be installed
+- EC2 instances must have SSM Agent installed and running
+- IAM permissions: `ssm:StartSession`, `ec2:DescribeInstances`
+
+**Installation of Session Manager Plugin:**
+- macOS: `brew install --cask session-manager-plugin`
+- Linux/Windows: See [AWS Session Manager Plugin installation guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+
+**Usage in TUI:**
+1. Launch awsom: `awsom`
+2. Press `v` to open the SSM Browser
+3. Use `/` to search and filter instances
+4. Navigate with arrow keys or `j`/`k` (vi-style)
+5. Press Enter to connect to an instance via SSM
 
 ## Exit Codes
 

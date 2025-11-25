@@ -7,6 +7,235 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2025-11-25
+
+### Added
+- **Platform-Agnostic Symbol Mode** - ASCII symbols for terminals without Unicode support
+  - Set `AWSOM_ASCII_SYMBOLS=1` environment variable to enable ASCII mode
+  - Centralized symbols module replaces 30+ hardcoded Unicode symbols
+  - ASCII fallbacks: 🟢→[+], 🔴→[-], ✓→[x], ⚠→[!], spinner→|/-\
+  - Supports Windows Terminal, cmd.exe, and all Linux/macOS terminals
+- **SSM Browser State Sorting** - Press 's' to cycle through sort options
+  - Sort order: unsorted → name → ID → state → IP → unsorted
+  - State priority: running > pending > stopping > stopped > shutting-down > unknown
+  - Groups connectable instances at top of list for easier access
+- **SSM Browser Navigation in Search Mode** - Use Up/Down arrows while searching
+  - Navigate filtered results without exiting search mode
+  - Tab or Enter to exit search mode (keeps filter active)
+  - Esc to clear filter (both in and out of search mode)
+
+### Fixed
+- SSO session token status now updates during auto-refresh cycle (not just credentials)
+- Cursor visibility when connecting to SSM sessions (using spawn with inherited stdio)
+- Blank screen after returning from SSM session (added terminal.clear())
+- Clipboard copy ('y' key) now actually copies to clipboard using arboard library
+
+### Changed
+- Search prompt now shows in SSM browser header: "Search: <query>_"
+- Main screen help text changed from 'ssm' to 'SSM browser'
+- SSM browser help bar now includes 's: Sort' hint
+
+### Documentation
+- Added platform-agnostic ASCII mode instructions for Unix/Linux/macOS, PowerShell, and cmd.exe
+
+## [0.14.0] - 2025-11-24
+
+### Added
+- **SSM Browser TUI** - Major feature for EC2 instance management
+  - Press 's' from Profiles pane to open SSM browser
+  - Lists all EC2 instances with SSM connection status (Online/Offline)
+  - Shows instance name, ID, state, and private IP address
+  - Navigate with ↑↓/jk keys, start session with Enter
+  - Real-time search with '/' key (filters by name, ID, or IP)
+  - View instance tags with 'v' key (sorted table format)
+  - Toggle offline instances with 'o' key (shows X online / Y total)
+  - Copy SSM command to clipboard with 'y' key
+  - Suspended TUI integration: SSM sessions run in-place, TUI auto-resumes on exit
+- **SSM SDK Integration** - aws-sdk-ssm and aws-sdk-ec2 dependencies
+  - Cross-platform terminal session launching
+  - EC2 instance listing with SSM status detection
+  - Instance tags fetching and display
+  - AWS CLI command generation for manual execution
+- **Role Credentials Auto-Refresh** - Proactive credential renewal before expiration
+  - Refreshes credentials 3 hours before they expire
+  - Maintains continuous access without user intervention
+  - Enables ~24h credential experience from 12h credential limits
+  - Updates both ~/.aws/credentials and in-memory state
+
+### Fixed
+- Always exclude terminated instances from SSM browser list
+- SSM commands now include AWS_PROFILE prefix for correct profile context
+- Panic hook installed to restore terminal on crash during SSM sessions
+
+### Changed
+- Default SSM browser shows only online instances (toggle with 'o')
+- SSM browser header displays online/total counts
+- Help text capitalization: "Start session" / "Copy command"
+
+### Internal
+- Added tests for token and credentials refresh methods
+- SSO token refresh infrastructure with client credentials storage
+
+## [0.13.0] - 2025-11-23
+
+### Added
+- **Auto-Refresh for External Credential Changes** - TUI detects changes made by other tools
+  - Light-weight refresh reads local credential files every 60 seconds
+  - Updates profile statuses (active/expired) without AWS API calls
+  - Works even when SSO session is logged out
+  - Keeps awsom in sync when users authenticate via AWS CLI or other tools
+- **SSO Token Refresh Infrastructure** - Foundation for silent token renewal
+  - Added client_id, client_secret, and refresh_token storage in cached tokens
+  - Request refresh_token grant type during client registration
+  - Added OidcClient.refresh_token() method for silent token refresh
+  - Helper methods: can_refresh(), needs_refresh(), should_auto_refresh()
+  - Enables automatic SSO session refresh for supporting organizations
+
+### Fixed
+- Profiles now remain visible when SSO session is logged out
+  - Previously, logging out cleared the profiles pane
+  - Cached profile data and valid credentials are now preserved
+  - Provides accurate state representation and better UX
+
+### Changed
+- Boxed SsoToken in LoginResult to avoid large enum variant warning
+
+## [0.12.0] - 2025-11-23
+
+### Fixed
+- **Atomic Writes for Config Files** - Prevents file corruption on crashes
+  - Uses temp file + fsync + atomic rename pattern
+  - Protects ~/.aws/config and ~/.aws/credentials from corruption
+  - Safe against process interruption (crash, Ctrl+C, power loss)
+- **Eliminated Panic-Prone Code Paths** - Improved stability
+  - Replaced unsafe .unwrap() with if-let pattern matching in aws_config.rs
+  - Removed panic-prone Default impl for SessionManager
+  - Added proper error handling for stdin/stdout operations
+  - Added graceful stderr fallback when log file creation fails
+
+### Changed
+- **Device Authorization Refactoring** - Replaced Arc<Mutex<>> with tokio::sync::watch
+  - Eliminates potential blocking in async context
+  - Simplifies code with non-blocking borrow() instead of lock()
+  - Cleaner async/await patterns
+
+### Internal
+- **UI Module Refactoring** - Extracted types, state, and theme from app.rs
+  - Created types.rs with core domain types (LoginResult, AccountRoleWithStatus, ProfileEntry, etc.)
+  - Created state.rs with AppState and input wizard step enums
+  - Created theme.rs with catppuccin_color helper
+  - Reduced app.rs from 4955 to 4824 lines of code
+- Cleaned up dead code and added allow annotations (warnings reduced from 33 to 0)
+- Removed unused session/ and expiry/ modules entirely
+
+## [0.11.0] - 2025-11-23
+
+### Fixed
+- **Token Cache Key Consistency** - Fixed "No valid SSO token found" errors after login
+  - Session login now uses session_name for token cache key (not start_url)
+  - Consistent token lookup across login, status, and profile start commands
+  - Previously caused immediate failures when using `--session-name` parameter
+
+## [0.10.0] - 2025-11-23
+
+### Fixed
+- **SSO Session Renaming** - Properly handles session name changes in TUI
+  - Deletes old session from ~/.aws/config when renamed
+  - Updates all profiles referencing the old session name to use new name
+  - Prevents duplicate sessions and broken profile references
+
+## [0.9.0] - 2025-11-23
+
+### Added
+- **Profile-Specific Console Access** - New `--profile` parameter for console command
+  - Run `awsom profile console --profile staging` to open console for specific profile
+  - Reads account_id, role_name, and sso_session from profile configuration
+  - Complements existing account/role selection workflow
+
+### Fixed
+- **CLI Session Resolution** - Fixed session context loss in all CLI commands
+  - All commands (list, console, exec, export) now properly maintain session context
+  - resolve_sso_session() returns (session_name, start_url, region) tuple
+  - Commands pass session_name to SsoInstance for correct token lookup
+  - Session status command now uses resolved session info for proper token finding
+
+### Removed
+- Deprecated 'import' command (section markers are no longer used)
+
+## [0.8.1] - 2025-11-22
+
+### Fixed
+- Make-default dialog no longer shows "Profile already exists" incorrectly when no [default] exists
+- Uses get_profile_details() instead of is_profile_in_awsom_section() for proper existence check
+
+### Internal
+- CI: Added test job as prerequisite for releases
+- CI: Use Swatinem/rust-cache for more reliable caching (fixes macOS runner intermittent failures)
+
+## [0.8.0] - 2025-11-22
+
+### Added
+- **Multi-Profile Support** - Support for static credentials and incomplete profiles
+  - Static credentials profiles (non-SSO) now fully supported
+  - Detection of incomplete profiles (config-only, no credentials)
+  - Profile type indicators in TUI: SSO, STATIC, CONFIG
+  - 'v' key to view detailed profile information
+  - 'D' key to delete any profile type
+- **Improved Disk Cache** - Automatic invalidation when config/credentials change
+  - Detects external modifications to AWS configuration files
+  - Profiles load even without active SSO sessions
+  - Faster startup with intelligent cache invalidation
+
+### Changed
+- Renamed "Accounts & Roles" pane to "Profiles & Roles" throughout UI
+- Updated keyboard shortcuts: Tab to switch panes, e/v/d/D for profile operations
+- Added awsom-defaults comment explaining marker line purpose
+
+### Deprecated
+- Import command removed (section markers no longer used)
+
+## [0.7.1] - 2025-11-22
+
+### Added
+- **Startup Status Messages** - Animated spinner during AWS API calls
+  - Shows "Refreshing profile list..." during initial load
+  - UI displays immediately on startup (no blank screen)
+  - Skips API refresh if no SSO sessions are configured
+
+### Changed
+- Renamed "Accounts" to "Profiles" throughout UI and help screens
+- Status messages now display in header bar with spinner animation
+
+## [0.7.0] - 2025-11-22
+
+### Added
+- **Disk Cache for Profiles** - Improved multi-terminal support
+  - Profiles cached on disk for faster startup
+  - Cache shared across multiple terminal sessions
+  - Automatic cache invalidation based on file modification times
+
+## [0.6.0] - 2025-11-21
+
+### Added
+- **In-Memory Account/Role Caching** - Faster navigation within sessions
+  - Per-session caching eliminates redundant AWS API calls
+  - Press 'r' to bypass cache and fetch fresh data from AWS
+- **Session Filtering** - Focus on specific SSO session accounts
+  - Press 'f' on a session to show only its accounts
+  - Visual indicators: [FILTERED] marker in Sessions and Accounts panes
+  - Improves focus when managing multiple SSO sessions
+- **Static Credentials Support Foundation** - Domain models for static credentials
+  - CredentialType enum (Sso, Static)
+  - StaticCredentials struct with validation
+  - Comprehensive tests for static credential validation
+- **Visual Improvements** - Active pane indicator
+  - Asterisk (*) added to active pane title
+  - Improves visual clarity beyond color-only indication
+
+### Fixed
+- Confirmation dialog Y/N buttons now display correctly (fixed text wrapping issue)
+- Enter key on existing profile no longer shows incorrect "Overwrite" dialog
+
 ## [0.5.0] - 2025-10-15
 
 ### Breaking Changes
