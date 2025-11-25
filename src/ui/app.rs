@@ -35,6 +35,39 @@ use super::types::{
     AccountRoleWithStatus, ActivePane, ConfirmAction, LoginResult, ProfileEntry, SsoSessionInfo,
 };
 
+/// Sort order for SSM browser instance list
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SsmSortOrder {
+    /// No sorting (default order from API)
+    None,
+    /// Sort by instance name (alphabetical)
+    Name,
+    /// Sort by instance ID (alphabetical)
+    InstanceId,
+    /// Sort by private IP address (alphabetical)
+    PrivateIp,
+}
+
+impl SsmSortOrder {
+    fn next(&self) -> Self {
+        match self {
+            Self::None => Self::Name,
+            Self::Name => Self::InstanceId,
+            Self::InstanceId => Self::PrivateIp,
+            Self::PrivateIp => Self::None,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::None => "unsorted",
+            Self::Name => "name",
+            Self::InstanceId => "ID",
+            Self::PrivateIp => "IP",
+        }
+    }
+}
+
 pub struct App {
     /// Whether the app should quit
     should_quit: bool,
@@ -126,6 +159,8 @@ pub struct App {
     ssm_loading: bool,
     /// SSM browser: show offline instances (per-session setting)
     ssm_show_offline: bool,
+    /// SSM browser: current sort order
+    ssm_sort_order: SsmSortOrder,
 }
 
 impl App {
@@ -188,6 +223,7 @@ impl App {
             ssm_search_mode: false,
             ssm_loading: false,
             ssm_show_offline: false,
+            ssm_sort_order: SsmSortOrder::None,
         })
     }
 
@@ -4252,7 +4288,7 @@ impl App {
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":refresh "),
                 Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":ssm"),
+                Span::raw(":SSM browser"),
             ]),
         ];
         let help_bar = Paragraph::new(help_lines)
@@ -5245,6 +5281,11 @@ impl App {
                 };
                 self.status_message = Some(status.to_string());
             }
+            KeyCode::Char('s') => {
+                // Cycle through sort orders
+                self.ssm_sort_order = self.ssm_sort_order.next();
+                self.status_message = Some(format!("Sort by: {}", self.ssm_sort_order.as_str()));
+            }
             KeyCode::Char('v') => {
                 // View instance tags
                 if let Some(instance) = self.get_selected_ssm_instance() {
@@ -5301,7 +5342,8 @@ impl App {
 
     fn filtered_ssm_instances(&self) -> Vec<&crate::ssm::SsmInstance> {
         let filter = self.ssm_filter.to_lowercase();
-        self.ssm_instances
+        let mut instances: Vec<&crate::ssm::SsmInstance> = self
+            .ssm_instances
             .iter()
             .filter(|i| {
                 // Always exclude terminated instances
@@ -5323,7 +5365,35 @@ impl App {
 
                 true
             })
-            .collect()
+            .collect();
+
+        // Apply sorting based on current sort order
+        match self.ssm_sort_order {
+            SsmSortOrder::None => {
+                // No sorting, keep API order
+            }
+            SsmSortOrder::Name => {
+                instances.sort_by(|a, b| {
+                    a.name
+                        .to_lowercase()
+                        .cmp(&b.name.to_lowercase())
+                        .then_with(|| a.instance_id.cmp(&b.instance_id))
+                });
+            }
+            SsmSortOrder::InstanceId => {
+                instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+            }
+            SsmSortOrder::PrivateIp => {
+                instances.sort_by(|a, b| match (&a.private_ip, &b.private_ip) {
+                    (Some(a_ip), Some(b_ip)) => a_ip.cmp(b_ip),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.instance_id.cmp(&b.instance_id),
+                });
+            }
+        }
+
+        instances
     }
 
     fn get_selected_ssm_instance(&self) -> Option<&crate::ssm::SsmInstance> {
@@ -5624,7 +5694,7 @@ impl App {
 
         // Help bar
         let help = Paragraph::new(
-            "↑↓/jk: Navigate | Enter: Start session | v: View tags | y: Copy command | /: Search | o: Toggle offline | r: Refresh | q/Esc: Back",
+            "↑↓/jk: Navigate | Enter: Start session | v: View tags | y: Copy command | /: Search | s: Sort | o: Toggle offline | r: Refresh | q/Esc: Back",
         )
         .style(Style::default().fg(catppuccin_color(self.theme.colors.subtext0)));
         f.render_widget(help, chunks[2]);
