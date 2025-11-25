@@ -5230,7 +5230,7 @@ impl App {
             }
             KeyCode::Enter => {
                 // Start SSM session
-                self.start_ssm_session();
+                self.start_ssm_session()?;
             }
             KeyCode::Char('y') => {
                 // Copy command to clipboard (just show it for now)
@@ -5352,12 +5352,12 @@ impl App {
         })
     }
 
-    fn start_ssm_session(&mut self) {
+    fn start_ssm_session(&mut self) -> Result<()> {
         let instance = match self.get_selected_ssm_instance() {
             Some(i) => i.clone(),
             None => {
                 self.status_message = Some("No instance selected".to_string());
-                return;
+                return Ok(());
             }
         };
 
@@ -5367,7 +5367,7 @@ impl App {
                 instance.instance_id,
                 instance.ssm_status.as_str()
             ));
-            return;
+            return Ok(());
         }
 
         // Get profile name and region
@@ -5375,7 +5375,7 @@ impl App {
             Some(p) => p,
             None => {
                 self.status_message = Some("No profile selected".to_string());
-                return;
+                return Ok(());
             }
         };
 
@@ -5384,44 +5384,75 @@ impl App {
             .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
 
-        // Create command with AWS_PROFILE prefix
-        let cmd = format!(
-            "AWS_PROFILE={} aws ssm start-session --target {} --region {}",
-            profile_name, instance.instance_id, region
+        // Suspend TUI before running SSM session
+        disable_raw_mode()?;
+        execute!(std::io::stdout(), LeaveAlternateScreen)?;
+
+        // Install panic hook to restore terminal if something goes wrong
+        let original_hook = std::panic::take_hook();
+        let hook_clone = std::sync::Arc::new(original_hook);
+        let hook_for_panic = hook_clone.clone();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+            hook_for_panic(panic_info);
+        }));
+
+        // Run SSM session in current terminal
+        println!(
+            "Starting SSM session to {} ({})...\n",
+            instance.name, instance.instance_id
         );
 
-        // Try to open terminal with session
-        #[cfg(target_os = "macos")]
-        {
-            let script = format!(
-                r#"tell application "Terminal"
-                    activate
-                    do script "{}"
-                end tell"#,
-                cmd.replace('"', r#"\""#)
-            );
+        let status = std::process::Command::new("aws")
+            .arg("ssm")
+            .arg("start-session")
+            .arg("--target")
+            .arg(&instance.instance_id)
+            .arg("--region")
+            .arg(&region)
+            .env("AWS_PROFILE", &profile_name)
+            .status();
 
-            match std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .spawn()
-            {
-                Ok(_) => {
-                    self.status_message = Some(format!(
-                        "Started session to {} ({})",
-                        instance.name, instance.instance_id
-                    ));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to open Terminal: {}", e));
-                }
+        // Restore original panic hook
+        let _ = std::panic::take_hook();
+        match std::sync::Arc::try_unwrap(hook_clone) {
+            Ok(hook) => std::panic::set_hook(hook),
+            Err(_) => {
+                // If we can't unwrap, just use default panic behavior
+                std::panic::set_hook(Box::new(|info| {
+                    eprintln!("{}", info);
+                }));
             }
         }
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.status_message = Some(format!("Run: {}", cmd));
+        // Resume TUI
+        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        enable_raw_mode()?;
+
+        // Set status message based on result
+        match status {
+            Ok(exit_status) => {
+                if exit_status.success() {
+                    self.status_message = Some(format!(
+                        "Session to {} ({}) ended successfully",
+                        instance.name, instance.instance_id
+                    ));
+                } else {
+                    self.status_message = Some(format!(
+                        "Session to {} ({}) exited with code: {}",
+                        instance.name,
+                        instance.instance_id,
+                        exit_status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to start session: {}", e));
+            }
         }
+
+        Ok(())
     }
 
     fn copy_ssm_command(&mut self) {
