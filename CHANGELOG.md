@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2025-11-26
+
+### Added
+- **Environment variable `AWSOM_DEFAULT_REGION`** to pre-fill default AWS region in TUI profile creation wizards
+- **Environment variable `AWSOM_DEFAULT_OUTPUT`** to pre-fill default output format in TUI profile creation wizards
+- Centered text in confirmation dialogs for improved visual presentation
+- Missing keyboard shortcuts to help screen: `a`, `D`, `s`, `x`, `f`, and full SSM Browser section
+
+### Changed
+- Profile creation wizards now check environment variables (`AWSOM_DEFAULT_REGION`, `AWSOM_DEFAULT_OUTPUT`) for default values
+- Simplified config file management by removing internal section markers
+
+### Fixed
+- README keyboard shortcuts documentation - removed non-existent 'l' key, corrected 's'/'v' key descriptions
+- README auto-refresh threshold documentation (now correctly states < 3 hours, not < 5 minutes)
+- Help screen now includes all available keyboard shortcuts
+
+### Removed
+- **awsom-defaults internal profile** - Replaced with environment variables for setting default region/output
+- **profiles.json cache file** - TUI now reads directly from `~/.aws/config` and `~/.aws/credentials`
+- **.awsom-initialized marker file** - No longer tracks initialization state
+- **Automatic backup creation** - Removed `config-before-awsom.bak` and `credentials-before-awsom.bak` creation
+- **Section marker comments** - Removed "managed by awsom" comment blocks from config files
+- **Non-existent features from README** - Removed references to 'l' key and config commands that don't exist
+
+### Documentation
+- Added `AWSOM_DEFAULT_REGION` and `AWSOM_DEFAULT_OUTPUT` to environment variables documentation
+- Fixed keyboard shortcuts section with accurate key bindings
+- Corrected SSM Browser access instructions (press 's', not 'v')
+- Removed documentation for non-existent features (config.toml, config commands)
+- Expanded TUI help screen with complete keyboard reference
+
 ## [0.15.0] - 2025-11-25
 
 ### Added

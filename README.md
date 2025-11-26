@@ -41,17 +41,17 @@ This means:
 
 If you have existing AWS CLI configurations, awsom will read and respect them. If you don't, awsom will create everything you need from scratch.
 
-### SSM Browser (Press 'v')
+### SSM Browser
 
 Browse and connect to EC2 instances via AWS Systems Manager:
 - View all EC2 instances across your AWS accounts
-- Filter by name, instance ID, state, or IP address
-- Sort by name, ID, state (running first), or IP
+- Filter by name, instance ID, or IP address
+- Sort by name, ID, state, or IP
 - One-key connection to SSM sessions (requires AWS Session Manager Plugin)
 - View instance tags, IP addresses, and real-time status
 - Toggle visibility of offline/stopped instances
-- Real-time search with '/' key, navigate with arrow keys while searching
-- Tab or Enter to exit search mode, Esc to clear filter
+- Real-time search with `/` key, navigate with arrow keys while searching
+- `Tab` or `Enter` to exit search mode, `Esc` to clear filter
 
 **Requirements:**
 - AWS Systems Manager Session Manager Plugin must be installed
@@ -91,7 +91,7 @@ brew install oleksiimorozenko/tap/awsom
 brew install oleksiimorozenko/tap/awsom
 ```
 
-**Why build-essential on Linux?**
+**Why `build-essential` on Linux?**
 Homebrew on Linux requires compiler tools (`gcc`, `make`, etc.) to be available on the system. According to the [Homebrew on Linux documentation](https://docs.brew.sh/Homebrew-on-Linux), "Homebrew does not use any libraries provided by your host system, except glibc and gcc if they are new enough." While Homebrew provides pre-compiled binaries (bottles) for most packages, [some dependencies will need to be built directly on your machine](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-homebrew-on-linux), which requires a working compiler environment.
 
 The `build-essential` package provides all the necessary compilation tools including GCC, GNU Make, and other essential development utilities.
@@ -251,16 +251,19 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 - `q` or `Esc` - Quit application
 - `?` or `F1` - Show help screen
 - `Tab` - Switch between Sessions and Profiles panes
-- `l` - Login/Logout (toggle)
 - `r` - Refresh account/role list
 - `↑`/`k` - Move selection up
 - `↓`/`j` - Move selection down
 - `Enter` - Start/stop session for selected role (activates or invalidates credentials)
+- `a` - Add new SSO session (Sessions pane) / Add static credential (Profiles pane)
 - `e` - Edit profile configuration
-- `v` - View SSM Browser (EC2 instance manager)
+- `v` - View profile details
+- `s` - Open SSM Browser (EC2 instance manager)
 - `d` - Set selected role's profile as default
 - `D` - Delete selected profile
 - `c` - Open AWS Console in browser for selected role
+- `x` - Copy credentials as export commands (Profiles pane only)
+- `f` - Toggle session filter (Sessions pane only)
 
 **In SSM Browser:**
 - `/` - Start search/filter
@@ -285,13 +288,13 @@ The TUI provides a k9s-style interactive interface for managing AWS SSO sessions
 
 **Setup:**
 1. Launch TUI: `awsom`
-2. Press `l` to login
+2. Select an SSO session and press `Enter` to login
 3. Follow the interactive prompts to configure your SSO (if not already configured)
 4. Authenticate in your browser and start managing your AWS sessions!
 
 #### 4. Browse EC2 Instances (Optional)
 
-Press `v` to open the SSM Browser and view your EC2 instances:
+Press `s` to open the SSM Browser and view your EC2 instances:
 
 - See all instances across your accounts with real-time status
 - Filter and sort to find the right instance
@@ -520,7 +523,7 @@ awsom uses `~/.aws/config` as the single source of truth for SSO configuration, 
 
 ### Interactive Configuration
 
-When you first run awsom and press 'l' to login, if no SSO configuration exists, you'll be guided through an interactive 3-step wizard that will:
+When you first run awsom and select a session to login (press `Enter`), if no SSO configuration exists, you'll be guided through an interactive 3-step wizard that will:
 
 1. Ask for your **SSO Start URL** (e.g., `https://your-org.awsapps.com/start`)
 2. Ask for your **SSO Region** (e.g., `us-east-1`)
@@ -551,6 +554,8 @@ You can override SSO configuration with environment variables:
 
 - `AWS_SSO_START_URL`: SSO start URL
 - `AWS_SSO_REGION`: SSO region
+- `AWSOM_DEFAULT_REGION`: Pre-fills default region in profile creation wizard (e.g., `us-east-1`)
+- `AWSOM_DEFAULT_OUTPUT`: Pre-fills default output format in profile creation wizard (e.g., `json`)
 
 ### Configuration Priority
 
@@ -633,17 +638,11 @@ awsom/
   - Help screen
   - Status bar with token expiry
   - Profile creation and deletion (Enter key)
-  - Profile renaming (p key)
+  - Profile renaming (e key for edit)
   - Set default profile (d key)
   - Open AWS Console in browser (c key)
-  - Login/logout in TUI (l key)
+  - Login/logout in TUI (Enter key on Sessions pane)
   - Auto-load cached SSO sessions on startup
-- Configuration file support ✅ **Working**
-  - XDG Base Directory compliance
-  - `~/.config/awsom/config.toml`
-  - Environment variable overrides
-  - Profile defaults (region, output format)
-  - `config init` and `config path` commands
 
 ### 📋 Planned
 - Background session refresh
@@ -672,7 +671,7 @@ awsom/
 ### Auto-Refresh Mechanism
 
 - Monitors SSO tokens and role credentials for expiration
-- Automatically refreshes credentials before they expire (when < 5 minutes remaining)
+- Automatically refreshes credentials before they expire (when < 3 hours remaining)
 - Detects external changes to credential files and updates UI in real-time
 - Background refresh runs every 60 seconds to maintain active sessions
 

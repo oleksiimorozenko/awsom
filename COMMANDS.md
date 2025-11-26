@@ -303,6 +303,8 @@ awsom profile exec --role-name Admin --account-name Production -- aws s3 ls
 |----------|-------------|---------|
 | `AWS_SSO_START_URL` | Default SSO start URL | `https://my-org.awsapps.com/start` |
 | `AWS_SSO_REGION` | Default SSO region | `us-east-1` |
+| `AWSOM_DEFAULT_REGION` | Pre-fills default region in profile creation wizard | `us-east-1` |
+| `AWSOM_DEFAULT_OUTPUT` | Pre-fills default output format in profile creation wizard | `json` |
 | `DISPLAY` | X11 display (headless detection) | `:0` |
 | `SSH_TTY` | SSH terminal (headless detection) | `/dev/pts/0` |
 | `SSH_CONNECTION` | SSH connection (headless detection) | `192.168.1.100 ...` |
