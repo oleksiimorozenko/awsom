@@ -84,4 +84,6 @@ pub enum ConfirmAction {
         session_index: usize,
         session_name: String,
     },
+    /// Delete a static credential profile
+    DeleteProfile { profile_name: String },
 }

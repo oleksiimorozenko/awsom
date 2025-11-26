@@ -1,6 +1,5 @@
 // Main TUI application
 use crate::auth::{AuthManager, DeviceAuthorizationInfo};
-use crate::cache::{self, CachedProfile, ProfileCache};
 use crate::credentials::CredentialManager;
 use crate::error::{Result, SsoError};
 use crate::models::{AccountRole, SsoInstance, SsoToken};
@@ -28,9 +27,7 @@ use std::io;
 use tokio::sync::mpsc;
 
 // Re-export types from extracted modules
-use super::state::{
-    AppState, DefaultsConfigStep, NewProfileConfigStep, SsoConfigStep, StaticCredentialStep,
-};
+use super::state::{AppState, NewProfileConfigStep, SsoConfigStep, StaticCredentialStep};
 use super::symbols;
 use super::theme::catppuccin_color;
 use super::types::{
@@ -107,8 +104,6 @@ pub struct App {
     accounts_cache: std::collections::HashMap<String, Vec<AccountRole>>,
     /// Current session filter (if Some, show only this session's accounts)
     filtered_session: Option<String>,
-    /// Disk cache state (if Some, showing cached data with timestamp)
-    showing_cached_data: Option<ProfileCache>,
     /// Authentication manager
     auth_manager: AuthManager,
     /// Credential manager
@@ -142,10 +137,6 @@ pub struct App {
     sso_input_cursor: usize,
     /// Original session name when editing (None if creating new)
     editing_session_original_name: Option<String>,
-    /// Default configuration input buffers
-    default_region_input: String,
-    default_output_input: String,
-    default_input_cursor: usize,
     /// New profile configuration input buffers
     new_profile_name_input: String,
     new_profile_region_input: String,
@@ -156,7 +147,11 @@ pub struct App {
     static_access_key_input: String,
     static_secret_key_input: String,
     static_session_token_input: String,
+    static_region_input: String, // NEW
+    static_output_input: String, // NEW
     static_input_cursor: usize,
+    /// Track if editing existing static profile (None = creating, Some(name) = editing)
+    editing_static_profile: Option<String>,
     /// Last automatic refresh time
     last_auto_refresh: Option<std::time::Instant>,
     /// Catppuccin theme flavor
@@ -201,7 +196,6 @@ impl App {
             accounts_list_state: TableState::default(),
             accounts_cache: std::collections::HashMap::new(),
             filtered_session: None,
-            showing_cached_data: None,
             auth_manager,
             credential_manager,
             sso_instance: None,
@@ -220,9 +214,6 @@ impl App {
             sso_session_name_input: "default-sso".to_string(),
             sso_input_cursor: 0,
             editing_session_original_name: None,
-            default_region_input: String::new(),
-            default_output_input: String::new(),
-            default_input_cursor: 0,
             new_profile_name_input: String::new(),
             new_profile_region_input: String::new(),
             new_profile_output_input: String::new(),
@@ -231,7 +222,10 @@ impl App {
             static_access_key_input: String::new(),
             static_secret_key_input: String::new(),
             static_session_token_input: String::new(),
+            static_region_input: String::new(), // NEW
+            static_output_input: String::new(), // NEW
             static_input_cursor: 0,
+            editing_static_profile: None,
             last_auto_refresh: None,
             theme: catppuccin::PALETTE.mocha,
             tick_count: 0,
@@ -268,23 +262,36 @@ impl App {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        // Ensure ~/.aws directory and files exist
+        let aws_dir = dirs::home_dir()
+            .ok_or_else(|| SsoError::ConfigError("Could not find home directory".to_string()))?
+            .join(".aws");
+        std::fs::create_dir_all(&aws_dir).map_err(|e| {
+            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
+        })?;
+
+        // Check and create config file if needed
+        let config_path = aws_dir.join("config");
+        if !config_path.exists() {
+            std::fs::write(&config_path, "").map_err(|e| {
+                SsoError::ConfigError(format!("Failed to create config file: {}", e))
+            })?;
+        }
+
+        // Check and create credentials file if needed
+        let creds_path = aws_dir.join("credentials");
+        if !creds_path.exists() {
+            std::fs::write(&creds_path, "").map_err(|e| {
+                SsoError::ConfigError(format!("Failed to create credentials file: {}", e))
+            })?;
+        }
+
         // Setup terminal
         enable_raw_mode().map_err(SsoError::Io)?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen).map_err(SsoError::Io)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(SsoError::Io)?;
-
-        // Try to load cached profiles first for instant display
-        if let Ok(Some(cached)) = cache::load_profiles() {
-            tracing::debug!(
-                "Loaded {} cached profiles ({})",
-                cached.profiles.len(),
-                cached.age_display()
-            );
-            self.load_profiles_from_cache(&cached);
-            self.showing_cached_data = Some(cached);
-        }
 
         // Load SSO sessions from disk (fast)
         self.load_all_sso_sessions().await;
@@ -502,9 +509,6 @@ impl App {
             AppState::SsoConfigInput { .. } => {
                 self.handle_sso_config_input_key(key).await?;
             }
-            AppState::DefaultsConfigInput { .. } => {
-                self.handle_defaults_config_input_key(key).await?;
-            }
             AppState::NewProfileConfigInput { .. } => {
                 self.handle_new_profile_config_input_key(key).await?;
             }
@@ -659,8 +663,8 @@ impl App {
             }
             KeyCode::Char('D') => {
                 if self.active_pane == ActivePane::Accounts {
-                    // Delete static credential (Shift+D)
-                    self.delete_static_profile().await?;
+                    // Delete profile (Shift+D) - works for all profile types
+                    self.delete_profile().await?;
                 }
             }
             KeyCode::Char('c') => {
@@ -685,6 +689,12 @@ impl App {
                 if self.active_pane == ActivePane::Accounts {
                     // Open SSM browser
                     self.open_ssm_browser().await?;
+                }
+            }
+            KeyCode::Char('x') => {
+                if self.active_pane == ActivePane::Accounts {
+                    // Copy credentials as export commands
+                    self.copy_credentials_to_clipboard().await?;
                 }
             }
             _ => {}
@@ -968,43 +978,82 @@ impl App {
         Ok(())
     }
 
-    /// Delete the selected static credential profile
-    async fn delete_static_profile(&mut self) -> Result<()> {
+    /// Delete the selected profile (works for static, SSO, and incomplete profiles)
+    async fn delete_profile(&mut self) -> Result<()> {
         if let Some(index) = self.accounts_list_state.selected() {
             if let Some(profile_entry) = self.accounts.get(index).cloned() {
                 match profile_entry {
                     ProfileEntry::Static { profile_name, .. } => {
-                        // Delete the static credential
-                        match crate::aws_config::delete_static_credentials(&profile_name) {
-                            Ok(()) => {
-                                self.status_message = Some(format!(
-                                    "{} Deleted static credential profile '{}'",
-                                    symbols::check_mark(),
-                                    profile_name
-                                ));
+                        // Show confirmation dialog
+                        let message = vec![
+                            format!(
+                                "Are you sure you want to delete static credential profile '{}'?",
+                                profile_name
+                            ),
+                            "".to_string(),
+                            "This will remove the credentials from ~/.aws/credentials.".to_string(),
+                        ];
 
-                                // Reload accounts to update the list
-                                if let Err(e) = self.load_accounts().await {
-                                    tracing::warn!(
-                                        "Failed to reload accounts after deletion: {}",
-                                        e
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                self.status_message =
-                                    Some(format!("Error deleting profile: {}", e));
-                            }
-                        }
+                        self.pending_confirm_action = Some(ConfirmAction::DeleteProfile {
+                            profile_name: profile_name.clone(),
+                        });
+                        self.state = AppState::ConfirmationDialog {
+                            title: "Delete Static Credential Profile".to_string(),
+                            message,
+                        };
                     }
-                    ProfileEntry::Sso(_) => {
-                        self.status_message = Some("Use lowercase 'd' to set as default. SSO profiles cannot be deleted from here.".to_string());
+                    ProfileEntry::Sso(account_with_status) => {
+                        // Get profile name for this SSO role
+                        let profile_name = if let Some(name) = &account_with_status.profile_name {
+                            name.clone()
+                        } else {
+                            self.status_message = Some(
+                                "Cannot delete: no profile configured for this role".to_string(),
+                            );
+                            return Ok(());
+                        };
+
+                        // Show confirmation for SSO profile
+                        let message = vec![
+                            format!(
+                                "Are you sure you want to delete SSO profile '{}'?",
+                                profile_name
+                            ),
+                            "".to_string(),
+                            format!(
+                                "This will remove the profile from ~/.aws/config for {}/{}.",
+                                account_with_status.account_role.account_name,
+                                account_with_status.account_role.role_name
+                            ),
+                            "".to_string(),
+                            "You can recreate it by activating the role again.".to_string(),
+                        ];
+
+                        self.pending_confirm_action =
+                            Some(ConfirmAction::DeleteProfile { profile_name });
+                        self.state = AppState::ConfirmationDialog {
+                            title: "Delete SSO Profile".to_string(),
+                            message,
+                        };
                     }
                     ProfileEntry::Incomplete { profile_name, .. } => {
-                        self.status_message = Some(format!(
-                            "Profile '{}' has no credentials to delete. It only exists in config.",
-                            profile_name
-                        ));
+                        // Show confirmation for incomplete profile
+                        let message = vec![
+                            format!(
+                                "Are you sure you want to delete incomplete profile '{}'?",
+                                profile_name
+                            ),
+                            "".to_string(),
+                            "This profile only exists in config with no credentials.".to_string(),
+                        ];
+
+                        self.pending_confirm_action = Some(ConfirmAction::DeleteProfile {
+                            profile_name: profile_name.clone(),
+                        });
+                        self.state = AppState::ConfirmationDialog {
+                            title: "Delete Incomplete Profile".to_string(),
+                            message,
+                        };
                     }
                 }
             }
@@ -1178,46 +1227,34 @@ impl App {
                             .await?;
                     } else {
                         // First time creating profile for this role
-                        // Check if awsom defaults exist
-                        match crate::aws_config::read_awsom_defaults()? {
-                            Some(defaults) => {
-                                // Defaults exist, show new profile config dialog
-                                let default_profile_name = format!(
-                                    "{}_{}",
-                                    account
-                                        .account_name
-                                        .replace(" ", "-")
-                                        .replace("_", "-")
-                                        .to_lowercase(),
-                                    account
-                                        .role_name
-                                        .replace(" ", "-")
-                                        .replace("_", "-")
-                                        .to_lowercase()
-                                );
-                                self.new_profile_name_input = default_profile_name;
-                                self.new_profile_region_input = defaults.region.clone();
-                                self.new_profile_output_input = defaults.output.clone();
-                                self.new_profile_input_cursor = self.new_profile_name_input.len();
-                                self.pending_role = Some(account);
-                                self.state = AppState::NewProfileConfigInput {
-                                    step: NewProfileConfigStep::ProfileName,
-                                };
-                                self.status_message =
-                                    Some("Configure profile for this role".to_string());
-                            }
-                            None => {
-                                // No awsom defaults found, show defaults config dialog first
-                                self.pending_role = Some(account);
-                                self.state = AppState::DefaultsConfigInput {
-                                    step: DefaultsConfigStep::Region,
-                                };
-                                self.status_message = Some(
-                                    "Let's configure default settings for new profiles!"
-                                        .to_string(),
-                                );
-                            }
-                        }
+                        // Show new profile config dialog
+                        let default_profile_name = format!(
+                            "{}_{}",
+                            account
+                                .account_name
+                                .replace(" ", "-")
+                                .replace("_", "-")
+                                .to_lowercase(),
+                            account
+                                .role_name
+                                .replace(" ", "-")
+                                .replace("_", "-")
+                                .to_lowercase()
+                        );
+                        self.new_profile_name_input = default_profile_name;
+
+                        // Pre-fill region and output from environment variables if set
+                        self.new_profile_region_input =
+                            crate::aws_config::get_default_region_from_env().unwrap_or_default();
+                        self.new_profile_output_input =
+                            crate::aws_config::get_default_output_from_env().unwrap_or_default();
+
+                        self.new_profile_input_cursor = self.new_profile_name_input.len();
+                        self.pending_role = Some(account);
+                        self.state = AppState::NewProfileConfigInput {
+                            step: NewProfileConfigStep::ProfileName,
+                        };
+                        self.status_message = Some("Configure profile for this role".to_string());
                     }
                 }
             }
@@ -1315,27 +1352,27 @@ impl App {
                             };
                         }
                         Ok(None) => {
-                            // No default profile - proceed directly
-                            match crate::aws_config::rename_profile(&existing_profile, "default") {
-                                Ok(()) => {
-                                    self.status_message = Some(format!(
-                                        "{} Set '{}' as default profile",
-                                        symbols::check_mark(),
-                                        existing_profile
-                                    ));
-                                    // Reload accounts to update indicators
-                                    if let Err(e) = self.load_accounts().await {
-                                        tracing::warn!(
-                                            "Failed to reload accounts after setting default: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    self.status_message =
-                                        Some(format!("Error setting default profile: {}", e));
-                                }
-                            }
+                            // No default profile - show confirmation dialog
+                            let message = vec![
+                                format!("Set '{}' as the default profile?", existing_profile),
+                                "".to_string(),
+                                "This will make this profile the default for AWS CLI commands."
+                                    .to_string(),
+                            ];
+
+                            let account = account_opt.unwrap_or(AccountRole {
+                                account_id: String::new(),
+                                account_name: String::new(),
+                                role_name: String::new(),
+                            });
+                            self.pending_confirm_action = Some(ConfirmAction::MakeProfileDefault {
+                                from_profile: existing_profile,
+                                account,
+                            });
+                            self.state = AppState::ConfirmationDialog {
+                                title: "Set Default Profile".to_string(),
+                                message,
+                            };
                         }
                         Err(e) => {
                             self.status_message =
@@ -1356,9 +1393,24 @@ impl App {
             if let Some(profile_entry) = self.accounts.get(index).cloned() {
                 // Handle SSO vs Static differently
                 match profile_entry {
-                    ProfileEntry::Static { .. } => {
-                        self.status_message =
-                            Some("Static credential editing coming soon (Step 3.6)".to_string());
+                    ProfileEntry::Static {
+                        profile_name,
+                        credentials,
+                        ..
+                    } => {
+                        // Read existing credentials and pre-fill inputs
+                        self.static_profile_name_input = profile_name.clone();
+                        self.static_access_key_input = credentials.access_key_id.clone();
+                        self.static_secret_key_input = credentials.secret_access_key.clone();
+                        self.static_session_token_input =
+                            credentials.session_token.clone().unwrap_or_default();
+                        self.static_input_cursor = self.static_profile_name_input.len();
+                        self.editing_static_profile = Some(profile_name);
+
+                        // Enter editing state
+                        self.state = AppState::StaticCredentialInput {
+                            step: StaticCredentialStep::ProfileName,
+                        };
                         return Ok(());
                     }
                     ProfileEntry::Sso(account_with_status) => {
@@ -1404,18 +1456,13 @@ impl App {
                             );
                             self.new_profile_name_input = default_profile_name;
 
-                            // Try to get defaults from awsom-defaults
-                            match crate::aws_config::read_awsom_defaults()? {
-                                Some(defaults) => {
-                                    self.new_profile_region_input = defaults.region;
-                                    self.new_profile_output_input = defaults.output;
-                                }
-                                None => {
-                                    // Use hardcoded fallback if awsom-defaults doesn't exist
-                                    self.new_profile_region_input = "us-east-1".to_string();
-                                    self.new_profile_output_input = "json".to_string();
-                                }
-                            }
+                            // Pre-fill region and output from environment variables if set
+                            self.new_profile_region_input =
+                                crate::aws_config::get_default_region_from_env()
+                                    .unwrap_or_default();
+                            self.new_profile_output_input =
+                                crate::aws_config::get_default_output_from_env()
+                                    .unwrap_or_default();
 
                             self.new_profile_input_cursor = self.new_profile_name_input.len();
                             self.existing_profile_name = None;
@@ -1718,7 +1765,40 @@ impl App {
                         }
                     }
                     StaticCredentialStep::SessionToken => {
-                        // Save static credentials (session token is optional)
+                        // Session token is optional, move to Region step
+                        self.state = AppState::StaticCredentialInput {
+                            step: StaticCredentialStep::Region,
+                        };
+
+                        // Pre-fill region from environment variable if available and field is empty
+                        if self.static_region_input.is_empty() {
+                            if let Some(region) = crate::aws_config::get_default_region_from_env() {
+                                self.static_region_input = region;
+                            }
+                        }
+                        self.static_input_cursor = self.static_region_input.len();
+                    }
+                    StaticCredentialStep::Region => {
+                        if self.static_region_input.trim().is_empty() {
+                            self.status_message = Some("Region is required".to_string());
+                        } else {
+                            self.state = AppState::StaticCredentialInput {
+                                step: StaticCredentialStep::Output,
+                            };
+
+                            // Pre-fill output from environment variable if available and field is empty
+                            if self.static_output_input.is_empty() {
+                                if let Some(output) =
+                                    crate::aws_config::get_default_output_from_env()
+                                {
+                                    self.static_output_input = output;
+                                }
+                            }
+                            self.static_input_cursor = self.static_output_input.len();
+                        }
+                    }
+                    StaticCredentialStep::Output => {
+                        // Save static credentials with region and output
                         let session_token = if self.static_session_token_input.trim().is_empty() {
                             None
                         } else {
@@ -1738,23 +1818,57 @@ impl App {
                         }
 
                         let profile_name = self.static_profile_name_input.trim();
-                        match crate::aws_config::write_static_credentials(profile_name, &creds) {
+
+                        // If editing and name changed, delete old profile
+                        if let Some(old_name) = &self.editing_static_profile {
+                            if old_name != profile_name {
+                                if let Err(e) =
+                                    crate::aws_config::delete_static_credentials(old_name)
+                                {
+                                    tracing::warn!(
+                                        "Failed to delete old profile '{}': {}",
+                                        old_name,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+
+                        // Get region and output (trim whitespace)
+                        let region = self.static_region_input.trim();
+                        let output = self.static_output_input.trim();
+
+                        match crate::aws_config::write_static_credentials(
+                            profile_name,
+                            &creds,
+                            Some(region),
+                            Some(output),
+                        ) {
                             Ok(()) => {
+                                let action = if self.editing_static_profile.is_some() {
+                                    "updated"
+                                } else {
+                                    "saved"
+                                };
                                 self.status_message = Some(format!(
-                                    "{} Static credentials '{}' saved to ~/.aws/credentials",
+                                    "{} Static credentials '{}' {} to ~/.aws/credentials and ~/.aws/config",
                                     symbols::check_mark(),
-                                    profile_name
+                                    profile_name,
+                                    action
                                 ));
                                 self.state = AppState::Main;
 
-                                // Clear input buffers
+                                // Clear input buffers and editing state
                                 self.static_profile_name_input.clear();
                                 self.static_access_key_input.clear();
                                 self.static_secret_key_input.clear();
                                 self.static_session_token_input.clear();
+                                self.static_region_input.clear(); // NEW
+                                self.static_output_input.clear(); // NEW
                                 self.static_input_cursor = 0;
+                                self.editing_static_profile = None;
 
-                                // Reload accounts to show the new profile
+                                // Reload accounts to show the updated profile
                                 if let Err(e) = self.load_accounts().await {
                                     tracing::warn!("Failed to reload accounts: {}", e);
                                 }
@@ -1774,7 +1888,10 @@ impl App {
                 self.static_access_key_input.clear();
                 self.static_secret_key_input.clear();
                 self.static_session_token_input.clear();
+                self.static_region_input.clear(); // NEW
+                self.static_output_input.clear(); // NEW
                 self.static_input_cursor = 0;
+                self.editing_static_profile = None;
                 self.status_message = Some("Configuration cancelled".to_string());
             }
             KeyCode::Left => {
@@ -1788,6 +1905,8 @@ impl App {
                     StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
                     StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
                     StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
+                    StaticCredentialStep::Region => self.static_region_input.len(), // NEW
+                    StaticCredentialStep::Output => self.static_output_input.len(), // NEW
                 };
                 if self.static_input_cursor < max_len {
                     self.static_input_cursor += 1;
@@ -1802,6 +1921,8 @@ impl App {
                     StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
                     StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
                     StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
+                    StaticCredentialStep::Region => self.static_region_input.len(), // NEW
+                    StaticCredentialStep::Output => self.static_output_input.len(), // NEW
                 };
             }
             KeyCode::Backspace => {
@@ -1821,6 +1942,16 @@ impl App {
                         }
                         StaticCredentialStep::SessionToken => {
                             self.static_session_token_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                        StaticCredentialStep::Region => {
+                            // NEW
+                            self.static_region_input
+                                .remove(self.static_input_cursor - 1);
+                        }
+                        StaticCredentialStep::Output => {
+                            // NEW
+                            self.static_output_input
                                 .remove(self.static_input_cursor - 1);
                         }
                     }
@@ -1850,6 +1981,18 @@ impl App {
                     if self.static_input_cursor < self.static_session_token_input.len() {
                         self.static_session_token_input
                             .remove(self.static_input_cursor);
+                    }
+                }
+                StaticCredentialStep::Region => {
+                    // NEW
+                    if self.static_input_cursor < self.static_region_input.len() {
+                        self.static_region_input.remove(self.static_input_cursor);
+                    }
+                }
+                StaticCredentialStep::Output => {
+                    // NEW
+                    if self.static_input_cursor < self.static_output_input.len() {
+                        self.static_output_input.remove(self.static_input_cursor);
                     }
                 }
             },
@@ -1884,158 +2027,24 @@ impl App {
                             self.static_input_cursor += 1;
                         }
                     }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_defaults_config_input_key(&mut self, key: KeyCode) -> Result<()> {
-        let current_step = if let AppState::DefaultsConfigInput { step } = &self.state {
-            step.clone()
-        } else {
-            return Ok(());
-        };
-
-        match key {
-            KeyCode::Enter => {
-                match current_step {
-                    DefaultsConfigStep::Region => {
-                        if self.default_region_input.trim().is_empty() {
-                            self.status_message = Some("Region is required".to_string());
-                        } else {
-                            self.state = AppState::DefaultsConfigInput {
-                                step: DefaultsConfigStep::Output,
-                            };
-                            self.default_input_cursor = self.default_output_input.len();
+                    StaticCredentialStep::Region => {
+                        // NEW
+                        // Only allow lowercase letters, digits, and hyphens for region
+                        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                            self.static_region_input.insert(self.static_input_cursor, c);
+                            self.static_input_cursor += 1;
                         }
                     }
-                    DefaultsConfigStep::Output => {
-                        // Save default configuration to [profile awsom-defaults]
-                        let config = crate::aws_config::DefaultConfig {
-                            region: self.default_region_input.trim().to_string(),
-                            output: self.default_output_input.trim().to_string(),
-                        };
-
-                        match crate::aws_config::write_awsom_defaults(&config) {
-                            Ok(()) => {
-                                self.status_message = Some(format!(
-                                    "{} Default settings saved to [profile awsom-defaults]",
-                                    symbols::check_mark()
-                                ));
-
-                                // Now proceed to new profile configuration
-                                if let Some(account) = &self.pending_role {
-                                    let default_profile_name = format!(
-                                        "{}_{}",
-                                        account
-                                            .account_name
-                                            .replace(" ", "-")
-                                            .replace("_", "-")
-                                            .to_lowercase(),
-                                        account
-                                            .role_name
-                                            .replace(" ", "-")
-                                            .replace("_", "-")
-                                            .to_lowercase()
-                                    );
-                                    self.new_profile_name_input = default_profile_name;
-                                    self.new_profile_region_input = config.region.clone();
-                                    self.new_profile_output_input = config.output.clone();
-                                    self.new_profile_input_cursor =
-                                        self.new_profile_name_input.len();
-                                    self.state = AppState::NewProfileConfigInput {
-                                        step: NewProfileConfigStep::ProfileName,
-                                    };
-                                }
-
-                                // Clear input buffers
-                                self.default_region_input = String::new();
-                                self.default_output_input = String::new();
-                                self.default_input_cursor = 0;
-                            }
-                            Err(e) => {
-                                self.status_message = Some(format!("Error saving defaults: {}", e));
-                            }
+                    StaticCredentialStep::Output => {
+                        // NEW
+                        // Allow lowercase letters for output format (json, text, table)
+                        if c.is_ascii_lowercase() {
+                            self.static_output_input.insert(self.static_input_cursor, c);
+                            self.static_input_cursor += 1;
                         }
                     }
                 }
             }
-            KeyCode::Esc => {
-                self.state = AppState::Main;
-                self.default_region_input = String::new();
-                self.default_output_input = String::new();
-                self.default_input_cursor = 0;
-                self.pending_role = None;
-                self.status_message = Some("Configuration cancelled".to_string());
-            }
-            KeyCode::Left => {
-                if self.default_input_cursor > 0 {
-                    self.default_input_cursor -= 1;
-                }
-            }
-            KeyCode::Right => {
-                let max_len = match current_step {
-                    DefaultsConfigStep::Region => self.default_region_input.len(),
-                    DefaultsConfigStep::Output => self.default_output_input.len(),
-                };
-                if self.default_input_cursor < max_len {
-                    self.default_input_cursor += 1;
-                }
-            }
-            KeyCode::Home => {
-                self.default_input_cursor = 0;
-            }
-            KeyCode::End => {
-                self.default_input_cursor = match current_step {
-                    DefaultsConfigStep::Region => self.default_region_input.len(),
-                    DefaultsConfigStep::Output => self.default_output_input.len(),
-                };
-            }
-            KeyCode::Backspace => {
-                if self.default_input_cursor > 0 {
-                    match current_step {
-                        DefaultsConfigStep::Region => {
-                            self.default_region_input
-                                .remove(self.default_input_cursor - 1);
-                        }
-                        DefaultsConfigStep::Output => {
-                            self.default_output_input
-                                .remove(self.default_input_cursor - 1);
-                        }
-                    }
-                    self.default_input_cursor -= 1;
-                }
-            }
-            KeyCode::Delete => match current_step {
-                DefaultsConfigStep::Region => {
-                    if self.default_input_cursor < self.default_region_input.len() {
-                        self.default_region_input.remove(self.default_input_cursor);
-                    }
-                }
-                DefaultsConfigStep::Output => {
-                    if self.default_input_cursor < self.default_output_input.len() {
-                        self.default_output_input.remove(self.default_input_cursor);
-                    }
-                }
-            },
-            KeyCode::Char(c) => match current_step {
-                DefaultsConfigStep::Region => {
-                    if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
-                        self.default_region_input
-                            .insert(self.default_input_cursor, c);
-                        self.default_input_cursor += 1;
-                    }
-                }
-                DefaultsConfigStep::Output => {
-                    if c.is_alphanumeric() || c == '-' {
-                        self.default_output_input
-                            .insert(self.default_input_cursor, c);
-                        self.default_input_cursor += 1;
-                    }
-                }
-            },
             _ => {}
         }
         Ok(())
@@ -2296,6 +2305,53 @@ impl App {
                                 ));
                             }
                         }
+                        ConfirmAction::DeleteProfile { profile_name } => {
+                            // Delete profile - works for all profile types (SSO, static, incomplete)
+                            let mut deleted_from_credentials = false;
+                            let mut deleted_from_config = false;
+
+                            // Try to delete from credentials file (for static profiles)
+                            if let Ok(()) =
+                                crate::aws_config::delete_static_credentials(&profile_name)
+                            {
+                                deleted_from_credentials = true;
+                            }
+
+                            // Delete from config file (for all profile types)
+                            match crate::aws_config::delete_profile(&profile_name) {
+                                Ok(()) => {
+                                    deleted_from_config = true;
+                                }
+                                Err(e) => {
+                                    // Only show error if we didn't delete from credentials either
+                                    if !deleted_from_credentials {
+                                        self.status_message =
+                                            Some(format!("Error deleting profile: {}", e));
+                                        self.state = AppState::Main;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+
+                            if deleted_from_credentials || deleted_from_config {
+                                self.status_message = Some(format!(
+                                    "{} Deleted profile '{}'",
+                                    symbols::check_mark(),
+                                    profile_name
+                                ));
+
+                                // Reload accounts to update the list
+                                if let Err(e) = self.load_accounts().await {
+                                    tracing::warn!(
+                                        "Failed to reload accounts after deletion: {}",
+                                        e
+                                    );
+                                }
+                            } else {
+                                self.status_message =
+                                    Some(format!("Error: profile '{}' not found", profile_name));
+                            }
+                        }
                     }
                 }
                 self.state = AppState::Main;
@@ -2315,7 +2371,7 @@ impl App {
 
     fn draw_confirmation_dialog(&self, f: &mut Frame, title: String, message: Vec<String>) {
         // Calculate dialog size with dynamic height
-        let dialog_width = 60;
+        let dialog_width = 90;
 
         // CRITICAL: Reserve space for essential elements
         // - borders: 2 lines
@@ -2407,12 +2463,14 @@ impl App {
             Span::raw(": Cancel"),
         ]));
 
-        let dialog = Paragraph::new(dialog_text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
-                .title("Confirmation"),
-        );
+        let dialog = Paragraph::new(dialog_text)
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(catppuccin_color(self.theme.colors.yellow)))
+                    .title("Confirmation"),
+            );
         // Note: No .wrap() - lines are pre-truncated to fit, ensuring Y/N buttons always show
 
         // Clear the background by rendering a clear block first
@@ -2836,60 +2894,6 @@ impl App {
         }
     }
 
-    /// Load profiles from disk cache (for instant startup display)
-    fn load_profiles_from_cache(&mut self, cache: &ProfileCache) {
-        // Load SSO profiles from cache (excluding awsom-defaults which is internal)
-        let mut all_profiles: Vec<ProfileEntry> = cache
-            .profiles
-            .iter()
-            .filter(|cached| cached.profile_name != "awsom-defaults")
-            .map(|cached| {
-                ProfileEntry::Sso(AccountRoleWithStatus {
-                    account_role: cached.account_role.clone(),
-                    is_active: false, // Mark as inactive since we haven't verified
-                    expiration: None,
-                    is_default: cached.is_default,
-                    profile_name: Some(cached.profile_name.clone()),
-                })
-            })
-            .collect();
-
-        // Also load static profiles from credentials file (not cached)
-        // Exclude awsom-defaults which is an internal profile
-        if let Ok(statuses) = crate::aws_config::list_profile_statuses() {
-            for status in statuses {
-                // Skip internal awsom-defaults profile
-                if status.profile_name == "awsom-defaults" {
-                    continue;
-                }
-                if status.has_credentials
-                    && status.credential_type == crate::models::CredentialType::Static
-                {
-                    if let Some(creds) = status.static_credentials {
-                        let is_default = status.profile_name == "default";
-                        all_profiles.push(ProfileEntry::Static {
-                            profile_name: status.profile_name,
-                            is_default,
-                            credentials: creds,
-                        });
-                    }
-                }
-            }
-        }
-
-        self.accounts = all_profiles;
-
-        // Select first item if we have profiles
-        if !self.accounts.is_empty() {
-            self.accounts_list_state.select(Some(0));
-        }
-
-        tracing::debug!(
-            "Loaded {} profiles from disk cache + static credentials",
-            self.accounts.len()
-        );
-    }
-
     /// Load only static and incomplete profiles (when no SSO sessions are configured)
     fn load_static_profiles_only(&mut self) {
         let mut profiles: Vec<ProfileEntry> = Vec::new();
@@ -2945,45 +2949,6 @@ impl App {
             "Loaded {} profiles (static + incomplete, no SSO sessions configured)",
             self.accounts.len()
         );
-    }
-
-    /// Save current profiles to disk cache
-    fn save_profiles_to_cache(&self) {
-        let cached_profiles: Vec<CachedProfile> = self
-            .accounts
-            .iter()
-            .filter_map(|entry| {
-                match entry {
-                    ProfileEntry::Sso(status) => {
-                        // Get session name from current session or cache
-                        let session_name = self
-                            .get_selected_session()
-                            .map(|s| s.session_name.clone())
-                            .unwrap_or_else(|| "unknown".to_string());
-
-                        Some(CachedProfile {
-                            profile_name: status.profile_name.clone().unwrap_or_else(|| {
-                                format!(
-                                    "{}/{}",
-                                    status.account_role.account_name, status.account_role.role_name
-                                )
-                            }),
-                            account_role: status.account_role.clone(),
-                            session_name,
-                            is_default: status.is_default,
-                        })
-                    }
-                    ProfileEntry::Static { .. } => None, // Don't cache static profiles
-                    ProfileEntry::Incomplete { .. } => None, // Don't cache incomplete profiles
-                }
-            })
-            .collect();
-
-        if !cached_profiles.is_empty() {
-            if let Err(e) = cache::save_profiles(&cached_profiles) {
-                tracing::warn!("Failed to save profiles to cache: {}", e);
-            }
-        }
     }
 
     /// Light-weight refresh: update credential statuses from local files
@@ -3566,10 +3531,6 @@ impl App {
                 self.accounts.len()
             ));
 
-            // Save to disk cache and clear cached data flag (now showing fresh data)
-            self.save_profiles_to_cache();
-            self.showing_cached_data = None;
-
             // Select first item if none selected
             if self.accounts_list_state.selected().is_none() && !self.accounts.is_empty() {
                 self.accounts_list_state.select(Some(0));
@@ -4014,6 +3975,199 @@ impl App {
         Ok(())
     }
 
+    async fn copy_credentials_to_clipboard(&mut self) -> Result<()> {
+        if let Some(index) = self.accounts_list_state.selected() {
+            if let Some(profile_entry) = self.accounts.get(index).cloned() {
+                match profile_entry {
+                    ProfileEntry::Sso(account_with_status) => {
+                        let account = account_with_status.account_role;
+
+                        // Check if credentials are expired
+                        if let Some(expiration) = account_with_status.expiration {
+                            if expiration <= chrono::Utc::now() {
+                                self.status_message = Some(format!(
+                                    "{} Credentials expired. Press Enter to refresh.",
+                                    symbols::warning()
+                                ));
+                                return Ok(());
+                            }
+                        }
+
+                        // Check if credentials are active
+                        if !account_with_status.is_active {
+                            self.status_message = Some(
+                                "No active credentials. Press Enter to create credentials first."
+                                    .to_string(),
+                            );
+                            return Ok(());
+                        }
+
+                        // Get credentials from cache
+                        if let (Some(ref token), Some(ref instance)) =
+                            (&self.sso_token, &self.sso_instance)
+                        {
+                            match self
+                                .credential_manager
+                                .get_role_credentials(
+                                    &instance.region,
+                                    &token.access_token,
+                                    &account.account_id,
+                                    &account.role_name,
+                                )
+                                .await
+                            {
+                                Ok(creds) => {
+                                    // Get region (try from profile, fall back to SSO region)
+                                    let profile_name =
+                                        crate::aws_config::get_existing_profile_name(&account)?
+                                            .unwrap_or_else(|| {
+                                                format!(
+                                                    "{}/{}",
+                                                    account.account_name, account.role_name
+                                                )
+                                            });
+                                    let region =
+                                        crate::aws_config::get_profile_region(&profile_name)
+                                            .ok()
+                                            .flatten()
+                                            .unwrap_or_else(|| instance.region.clone());
+
+                                    // Format credentials as export commands
+                                    let export_text = self.format_credentials_export(
+                                        &creds.access_key_id,
+                                        &creds.secret_access_key,
+                                        &creds.session_token,
+                                        &region,
+                                    );
+
+                                    // Copy to clipboard
+                                    match arboard::Clipboard::new() {
+                                        Ok(mut clipboard) => match clipboard.set_text(&export_text)
+                                        {
+                                            Ok(_) => {
+                                                self.status_message = Some(format!(
+                                                    "{} Copied credentials to clipboard (expires {})",
+                                                    symbols::check_mark(),
+                                                    creds.expiration_display()
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                self.status_message =
+                                                    Some(format!("Failed to copy: {}", e));
+                                            }
+                                        },
+                                        Err(e) => {
+                                            self.status_message =
+                                                Some(format!("Clipboard unavailable: {}", e));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.status_message =
+                                        Some(format!("Error getting credentials: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    ProfileEntry::Static { profile_name, .. } => {
+                        // For static credentials, read from ~/.aws/credentials
+                        match crate::aws_config::get_profile_credentials(&profile_name) {
+                            Ok(Some(creds)) => {
+                                // Get region from config
+                                let region = crate::aws_config::get_profile_region(&profile_name)
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or_else(|| "us-east-1".to_string());
+
+                                // Format credentials as export commands
+                                let export_text = self.format_credentials_export(
+                                    &creds.access_key_id,
+                                    &creds.secret_access_key,
+                                    creds.session_token.as_deref().unwrap_or(""),
+                                    &region,
+                                );
+
+                                // Copy to clipboard
+                                match arboard::Clipboard::new() {
+                                    Ok(mut clipboard) => match clipboard.set_text(&export_text) {
+                                        Ok(_) => {
+                                            self.status_message = Some(format!(
+                                                "{} Copied credentials to clipboard",
+                                                symbols::check_mark()
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.status_message =
+                                                Some(format!("Failed to copy: {}", e));
+                                        }
+                                    },
+                                    Err(e) => {
+                                        self.status_message =
+                                            Some(format!("Clipboard unavailable: {}", e));
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                self.status_message = Some(format!(
+                                    "No credentials found for profile '{}'",
+                                    profile_name
+                                ));
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("Error reading credentials: {}", e));
+                            }
+                        }
+                    }
+                    ProfileEntry::Incomplete { profile_name, .. } => {
+                        self.status_message =
+                            Some(format!("Profile '{}' has no credentials.", profile_name));
+                    }
+                }
+            }
+        } else {
+            self.status_message = Some("No profile selected".to_string());
+        }
+        Ok(())
+    }
+
+    fn format_credentials_export(
+        &self,
+        access_key_id: &str,
+        secret_access_key: &str,
+        session_token: &str,
+        region: &str,
+    ) -> String {
+        // Detect OS for appropriate format
+        #[cfg(target_os = "windows")]
+        {
+            // PowerShell format for Windows
+            let mut lines = vec![
+                format!("$env:AWS_ACCESS_KEY_ID=\"{}\"", access_key_id),
+                format!("$env:AWS_SECRET_ACCESS_KEY=\"{}\"", secret_access_key),
+            ];
+            if !session_token.is_empty() {
+                lines.push(format!("$env:AWS_SESSION_TOKEN=\"{}\"", session_token));
+            }
+            lines.push(format!("$env:AWS_DEFAULT_REGION=\"{}\"", region));
+            lines.join("\n")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Bash/Zsh format for Unix-like systems
+            let mut lines = vec![
+                format!("export AWS_ACCESS_KEY_ID=\"{}\"", access_key_id),
+                format!("export AWS_SECRET_ACCESS_KEY=\"{}\"", secret_access_key),
+            ];
+            if !session_token.is_empty() {
+                lines.push(format!("export AWS_SESSION_TOKEN=\"{}\"", session_token));
+            }
+            lines.push(format!("export AWS_DEFAULT_REGION=\"{}\"", region));
+            lines.join("\n")
+        }
+    }
+
     fn ui(&mut self, f: &mut Frame) {
         // Note: draw_loading_screen needs &mut self to poll device_auth_info from Arc
         match &self.state {
@@ -4023,9 +4177,6 @@ impl App {
             AppState::Error(msg) => self.draw_error_screen(f, msg.clone()),
             AppState::ProfileInput => self.draw_profile_input_screen(f),
             AppState::SsoConfigInput { step } => self.draw_sso_config_input_screen(f, step.clone()),
-            AppState::DefaultsConfigInput { step } => {
-                self.draw_defaults_config_input_screen(f, step.clone())
-            }
             AppState::NewProfileConfigInput { step } => {
                 self.draw_new_profile_config_input_screen(f, step.clone())
             }
@@ -4234,30 +4385,18 @@ impl App {
             Style::default().fg(catppuccin_color(self.theme.colors.surface0))
         };
 
-        // Add asterisk to title if this pane is active, show filter/cache status
-        let cache_indicator = self
-            .showing_cached_data
-            .as_ref()
-            .map(|c| format!(" [cached: {}]", c.age_display()))
-            .unwrap_or_default();
-
+        // Add asterisk to title if this pane is active, show filter status
         let accounts_title = if let Some(ref filtered) = self.filtered_session {
             // Show filter status in title
             if self.active_pane == ActivePane::Accounts {
-                format!(
-                    "Profiles & Roles (*) [Filtered: {}]{}",
-                    filtered, cache_indicator
-                )
+                format!("Profiles & Roles (*) [Filtered: {}]", filtered)
             } else {
-                format!(
-                    "Profiles & Roles [Filtered: {}]{}",
-                    filtered, cache_indicator
-                )
+                format!("Profiles & Roles [Filtered: {}]", filtered)
             }
         } else if self.active_pane == ActivePane::Accounts {
-            format!("Profiles & Roles (*){}", cache_indicator)
+            "Profiles & Roles (*)".to_string()
         } else {
-            format!("Profiles & Roles{}", cache_indicator)
+            "Profiles & Roles".to_string()
         };
 
         let table = Table::new(
@@ -4347,7 +4486,9 @@ impl App {
                 Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(":refresh "),
                 Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(":SSM browser"),
+                Span::raw(":SSM browser "),
+                Span::styled("x", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(":export"),
             ]),
         ];
         let help_bar = Paragraph::new(help_lines)
@@ -4484,7 +4625,7 @@ impl App {
     fn draw_help_screen(&self, f: &mut Frame) {
         let help_text = vec![
             Line::from(Span::styled(
-                "awsom - Help",
+                format!("awsom v{} - Help", env!("CARGO_PKG_VERSION")),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -4506,14 +4647,37 @@ impl App {
             Line::from("  a           - Add new SSO session"),
             Line::from("  e           - Edit selected SSO session"),
             Line::from("  d           - Delete selected SSO session"),
+            Line::from("  f           - Toggle session filter"),
             Line::from(""),
             Line::from("Profiles Pane:"),
             Line::from("  Enter       - Start/stop session (activate/invalidate credentials)"),
+            Line::from("  a           - Add static credential profile"),
             Line::from("  v           - View profile details"),
             Line::from("  e           - Edit profile (name, region, output) for selected role"),
             Line::from("  d           - Make selected profile the default"),
+            Line::from("  D           - Delete selected profile (Shift+D)"),
             Line::from("  c           - Open AWS Console in browser for selected profile"),
+            Line::from("  s           - Open SSM Browser (EC2 instance manager)"),
+            Line::from("  x           - Copy credentials as export commands"),
             Line::from("  r           - Refresh profile list"),
+            Line::from(""),
+            Line::from("SSM Browser:"),
+            Line::from("  /           - Search/filter instances"),
+            Line::from(format!(
+                "  {}, k        - Previous instance",
+                symbols::arrow_up()
+            )),
+            Line::from(format!(
+                "  {}, j        - Next instance",
+                symbols::arrow_down()
+            )),
+            Line::from("  Enter       - Connect to instance via SSM"),
+            Line::from("  y           - Copy SSM command to clipboard"),
+            Line::from("  r           - Refresh instance list"),
+            Line::from("  s           - Cycle sort order (name/ID/state/IP)"),
+            Line::from("  o           - Toggle offline instances visibility"),
+            Line::from("  v           - View instance tags"),
+            Line::from("  q, Esc      - Return to main screen"),
             Line::from(""),
             Line::from("General:"),
             Line::from("  q, Esc      - Quit application"),
@@ -4855,91 +5019,6 @@ impl App {
         f.render_widget(help, chunks[4]);
     }
 
-    fn draw_defaults_config_input_screen(&self, f: &mut Frame, step: DefaultsConfigStep) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),  // Title
-                Constraint::Length(10), // Instructions
-                Constraint::Length(3),  // Input
-                Constraint::Min(0),     // Spacer
-                Constraint::Length(2),  // Help
-            ])
-            .split(f.area());
-
-        // Title
-        let title = Paragraph::new("Configure Default Profile Settings")
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(title, chunks[0]);
-
-        // Instructions
-        let (step_title, instructions, example) = match step {
-            DefaultsConfigStep::Region => (
-                "Step 1 of 2: Default Region",
-                "Enter the default AWS region for new profiles",
-                "Example: us-east-1, eu-west-1, ap-southeast-2",
-            ),
-            DefaultsConfigStep::Output => (
-                "Step 2 of 2: Default Output Format",
-                "Enter the default output format for AWS CLI",
-                "Options: json, text, table, yaml",
-            ),
-        };
-
-        let info_text = vec![
-            Line::from(Span::styled(
-                step_title,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(instructions),
-            Line::from(""),
-            Line::from(Span::styled(example, Style::default().fg(Color::Gray))),
-            Line::from(""),
-            Line::from("These settings will be saved to ~/.aws/config as:"),
-            Line::from("[profile awsom-defaults]"),
-            Line::from("This allows awsom to provide defaults without interfering with"),
-            Line::from("your [default] profile."),
-        ];
-
-        let info = Paragraph::new(info_text).block(Block::default().borders(Borders::ALL));
-        f.render_widget(info, chunks[1]);
-
-        // Input field
-        let (current_input, field_label) = match step {
-            DefaultsConfigStep::Region => (&self.default_region_input, "Default Region"),
-            DefaultsConfigStep::Output => (&self.default_output_input, "Default Output Format"),
-        };
-
-        let input_with_cursor = if current_input.is_empty() {
-            "█".to_string()
-        } else {
-            let (before, after) = current_input.split_at(self.default_input_cursor);
-            format!("{}█{}", before, after)
-        };
-
-        let input = Paragraph::new(input_with_cursor.as_str())
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL).title(field_label));
-        f.render_widget(input, chunks[2]);
-
-        // Help
-        let help = Paragraph::new(format!(
-            "Enter: Next | Esc: Cancel | {}{}: Move cursor | Type to edit",
-            symbols::arrow_left(),
-            symbols::arrow_right()
-        ))
-        .style(Style::default().fg(Color::Gray));
-        f.render_widget(help, chunks[4]);
-    }
-
     fn draw_static_credential_input_screen(&self, f: &mut Frame, step: StaticCredentialStep) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -4965,24 +5044,34 @@ impl App {
         // Instructions based on current step
         let (step_title, instructions, example) = match step {
             StaticCredentialStep::ProfileName => (
-                "Step 1 of 4: Profile Name",
+                "Step 1 of 6: Profile Name",
                 "Enter a name for this credential profile",
                 "Example: my-dev-profile",
             ),
             StaticCredentialStep::AccessKeyId => (
-                "Step 2 of 4: AWS Access Key ID",
+                "Step 2 of 6: AWS Access Key ID",
                 "Enter your AWS Access Key ID",
                 "Example: AKIAIOSFODNN7EXAMPLE",
             ),
             StaticCredentialStep::SecretAccessKey => (
-                "Step 3 of 4: AWS Secret Access Key",
+                "Step 3 of 6: AWS Secret Access Key",
                 "Enter your AWS Secret Access Key",
                 "Example: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             ),
             StaticCredentialStep::SessionToken => (
-                "Step 4 of 4: Session Token (Optional)",
+                "Step 4 of 6: Session Token (Optional)",
                 "Enter session token for temporary credentials (or leave empty)",
                 "Leave empty for long-term credentials",
+            ),
+            StaticCredentialStep::Region => (
+                "Step 5 of 6: Region",
+                "Enter the default AWS region for this profile",
+                "Example: us-east-1, eu-west-1, ap-southeast-2",
+            ),
+            StaticCredentialStep::Output => (
+                "Step 6 of 6: Output Format",
+                "Enter the output format for AWS CLI commands",
+                "Example: json, text, table",
             ),
         };
 
@@ -5040,6 +5129,8 @@ impl App {
                 "Session Token (Optional)",
                 true,
             ),
+            StaticCredentialStep::Region => (&self.static_region_input, "Region", false),
+            StaticCredentialStep::Output => (&self.static_output_input, "Output Format", false),
         };
 
         let display_text = if mask_input && !current_input.is_empty() {

@@ -2,7 +2,6 @@
 
 mod auth;
 mod aws_config;
-mod cache;
 mod cli;
 mod console;
 mod credentials;

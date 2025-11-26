@@ -16,8 +16,6 @@ pub enum AppState {
     ProfileInput,
     /// SSO configuration input
     SsoConfigInput { step: SsoConfigStep },
-    /// Default profile configuration input
-    DefaultsConfigInput { step: DefaultsConfigStep },
     /// New profile configuration input (with region and output)
     NewProfileConfigInput { step: NewProfileConfigStep },
     /// Static credential input (for creating/editing static profiles)
@@ -39,6 +37,8 @@ pub enum StaticCredentialStep {
     AccessKeyId,
     SecretAccessKey,
     SessionToken, // Optional
+    Region,       // NEW
+    Output,       // NEW
 }
 
 /// Steps for SSO configuration input wizard
@@ -47,13 +47,6 @@ pub enum SsoConfigStep {
     StartUrl,
     Region,
     SessionName,
-}
-
-/// Steps for defaults configuration input wizard
-#[derive(Debug, Clone, PartialEq)]
-pub enum DefaultsConfigStep {
-    Region,
-    Output,
 }
 
 /// Steps for new profile configuration input wizard

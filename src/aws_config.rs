@@ -35,132 +35,34 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check if awsom has been initialized (backups created)
-fn is_initialized() -> Result<bool> {
-    if let Some(home) = dirs::home_dir() {
-        let marker_file = home.join(".aws").join(".awsom-initialized");
-        Ok(marker_file.exists())
-    } else {
-        Err(SsoError::ConfigError(
-            "Could not determine home directory".to_string(),
-        ))
-    }
-}
-
-/// Create backups of config and credentials files on first use
-fn create_backups_if_needed() -> Result<()> {
-    // Check if already initialized
-    if is_initialized()? {
-        return Ok(());
-    }
-
-    let home = dirs::home_dir()
-        .ok_or_else(|| SsoError::ConfigError("Could not determine home directory".to_string()))?;
-
-    let aws_dir = home.join(".aws");
-    let config_path = aws_dir.join("config");
-    let credentials_path = aws_dir.join("credentials");
-    let marker_file = aws_dir.join(".awsom-initialized");
-
-    // Create ~/.aws directory if it doesn't exist
-    if !aws_dir.exists() {
-        fs::create_dir_all(&aws_dir).map_err(|e| {
-            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
-        })?;
-    }
-
-    // Backup config file if it exists, then add header comment
-    if config_path.exists() {
-        let backup_path = aws_dir.join("config-before-awsom.bak");
-        fs::copy(&config_path, &backup_path)
-            .map_err(|e| SsoError::ConfigError(format!("Failed to backup config file: {}", e)))?;
-        tracing::info!("Created backup: {:?}", backup_path);
-
-        // Add header comment to config file
-        add_header_comment(&config_path, "config-before-awsom.bak")?;
-    }
-
-    // Backup credentials file if it exists, then add header comment
-    if credentials_path.exists() {
-        let backup_path = aws_dir.join("credentials-before-awsom.bak");
-        fs::copy(&credentials_path, &backup_path).map_err(|e| {
-            SsoError::ConfigError(format!("Failed to backup credentials file: {}", e))
-        })?;
-        tracing::info!("Created backup: {:?}", backup_path);
-
-        // Add header comment to credentials file
-        add_header_comment(&credentials_path, "credentials-before-awsom.bak")?;
-    }
-
-    // Create marker file
-    fs::write(&marker_file, "")
-        .map_err(|e| SsoError::ConfigError(format!("Failed to create marker file: {}", e)))?;
-
-    tracing::info!("awsom initialization complete - backups created");
-    Ok(())
-}
-
-/// Add header comment to a file explaining it's managed by awsom
-fn add_header_comment(file_path: &std::path::Path, backup_filename: &str) -> Result<()> {
-    let content = fs::read_to_string(file_path)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to read file: {}", e)))?;
-
-    // Check if header comment already exists
-    if content.starts_with("# This file is managed by awsom") {
-        return Ok(());
-    }
-
-    // Prepare header comment
-    let header = format!(
-        "# This file is managed by awsom (AWS Organization Manager)\n\
-         # Original backup: {} (created on first run)\n\
-         # For more information: https://github.com/oleksiimorozenko/awsom\n\
-         \n",
-        backup_filename
-    );
-
-    // Prepend header to existing content
-    let new_content = format!("{}{}", header, content);
-
-    // Write updated content
-    fs::write(file_path, new_content)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to write file: {}", e)))?;
-
-    tracing::info!("Added header comment to {:?}", file_path);
-    Ok(())
-}
-
-// Section marker constants (public for import command)
-pub const USER_MANAGED_MARKER: &str =
-    "# ==================== User-managed sections ====================";
-pub const USER_MANAGED_COMMENT: &str = "# (sections below this line are not modified by awsom)";
-pub const AWSOM_MANAGED_MARKER: &str =
-    "# ==================== Managed by awsom ====================";
-pub const AWSOM_MANAGED_COMMENT: &str =
-    "# (sections below this line are automatically managed by awsom)";
-
-/// Check if a line is any marker (user-managed or awsom-managed)
-fn is_marker_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed == AWSOM_MANAGED_MARKER
-        || trimmed == AWSOM_MANAGED_COMMENT
-        || trimmed == USER_MANAGED_MARKER
-        || trimmed == USER_MANAGED_COMMENT
-}
-
-/// Legacy function - now just passes content through unchanged
-/// Section markers are no longer used; all profiles are treated equally
-pub fn ensure_markers(content: &str) -> String {
-    // Remove any existing markers when encountered
-    let mut result = String::new();
-    for line in content.lines() {
-        if !is_marker_line(line) {
-            result.push_str(line);
-            result.push('\n');
+/// Get default region from AWSOM_DEFAULT_REGION environment variable
+pub fn get_default_region_from_env() -> Option<String> {
+    std::env::var("AWSOM_DEFAULT_REGION").ok().and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-    }
-    // Remove trailing newlines and add just one
-    let trimmed = result.trim_end();
+    })
+}
+
+/// Get default output format from AWSOM_DEFAULT_OUTPUT environment variable
+pub fn get_default_output_from_env() -> Option<String> {
+    std::env::var("AWSOM_DEFAULT_OUTPUT").ok().and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+/// Normalize content newlines - section markers are no longer used
+pub fn ensure_markers(content: &str) -> String {
+    // Just normalize newlines
+    let trimmed = content.trim_end();
     if trimmed.is_empty() {
         String::new()
     } else {
@@ -217,11 +119,6 @@ fn split_into_sections(content: &str) -> (String, String, String) {
 
     for line in content.lines() {
         let trimmed = line.trim();
-
-        // Skip any legacy marker lines
-        if is_marker_line(line) {
-            continue;
-        }
 
         // Collect header (leading comments before any section)
         if in_header {
@@ -629,130 +526,6 @@ pub fn read_default_config() -> Result<Option<DefaultConfig>> {
     }
 }
 
-/// Read awsom defaults from [profile awsom-defaults] section
-pub fn read_awsom_defaults() -> Result<Option<DefaultConfig>> {
-    let config_path = config_file_path()?;
-
-    if !config_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
-
-    let mut in_awsom_defaults = false;
-    let mut region: Option<String> = None;
-    let mut output: Option<String> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Check for section headers
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_awsom_defaults = trimmed == "[profile awsom-defaults]";
-            continue;
-        }
-
-        if in_awsom_defaults && trimmed.contains('=') {
-            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                let key = parts[0].trim();
-                let value = parts[1].trim();
-
-                match key {
-                    "region" => region = Some(value.to_string()),
-                    "output" => output = Some(value.to_string()),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    if region.is_some() || output.is_some() {
-        Ok(Some(DefaultConfig {
-            region: region.unwrap_or_else(|| "us-east-1".to_string()),
-            output: output.unwrap_or_else(|| "json".to_string()),
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Write awsom defaults to [profile awsom-defaults] in awsom-managed section
-pub fn write_awsom_defaults(config: &DefaultConfig) -> Result<()> {
-    let config_path = config_file_path()?;
-    let aws_dir = config_path
-        .parent()
-        .ok_or_else(|| SsoError::ConfigError("Invalid config path".to_string()))?;
-
-    // Create ~/.aws directory if it doesn't exist
-    if !aws_dir.exists() {
-        fs::create_dir_all(aws_dir).map_err(|e| {
-            SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
-        })?;
-    }
-
-    // Create backups on first write
-    create_backups_if_needed()?;
-
-    let existing_config = if config_path.exists() {
-        fs::read_to_string(&config_path)
-            .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?
-    } else {
-        String::new()
-    };
-
-    // Strip any legacy markers from config
-    let config_clean = ensure_markers(&existing_config);
-
-    // Split into header and content sections
-    let (header, content, _) = split_into_sections(&config_clean);
-
-    // Parse existing content
-    let sessions = parse_sso_sessions_from_content(&content);
-    let (default_config_opt, mut profiles) = parse_profiles_from_content(&content);
-
-    // Remove existing awsom-defaults profile if it exists
-    profiles.retain(|(name, _)| name != "profile awsom-defaults");
-
-    // Add awsom-defaults profile
-    profiles.push((
-        "profile awsom-defaults".to_string(),
-        vec![
-            ("region".to_string(), config.region.clone()),
-            ("output".to_string(), config.output.clone()),
-        ],
-    ));
-
-    // Sort profiles alphabetically by name
-    profiles.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // Build the new content section
-    let mut new_content = String::new();
-
-    // Add [default] section if it exists
-    if let Some(default_config) = default_config_opt {
-        new_content.push_str("[default]\n");
-        for (key, value) in default_config {
-            new_content.push_str(&format!("{} = {}\n", key, value));
-        }
-        new_content.push('\n');
-    }
-
-    // Add sorted SSO sessions
-    new_content.push_str(&rebuild_sso_sessions(&sessions));
-
-    // Add sorted profiles (including awsom-defaults)
-    new_content.push_str(&rebuild_profiles(&profiles));
-
-    // Reconstruct the file
-    let result = reconstruct_config(&header, "", &new_content);
-
-    atomic_write(&config_path, &cleanup_empty_lines(&result))?;
-
-    Ok(())
-}
-
 /// Check if a profile exists in the config file
 /// Note: Section markers are no longer used - all profiles are treated equally
 #[allow(dead_code)]
@@ -921,11 +694,6 @@ pub fn list_sso_profiles() -> Result<Vec<ConfigProfile>> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Skip marker lines
-        if is_marker_line(line) {
-            continue;
-        }
-
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             // Save previous profile if it's an SSO profile
             if let Some(name) = current_profile.take() {
@@ -1002,16 +770,11 @@ pub fn list_all_config_profiles() -> Result<Vec<ConfigProfile>> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Skip marker lines
-        if is_marker_line(line) {
-            continue;
-        }
-
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             // Save previous profile
             if let Some(name) = current_profile.take() {
-                // Skip awsom-defaults internal profile and sso-session sections
-                if name != "awsom-defaults" && !name.starts_with("sso-session ") {
+                // Skip sso-session sections
+                if !name.starts_with("sso-session ") {
                     profiles.push(ConfigProfile {
                         name,
                         sso_session: profile_data.get("sso_session").cloned(),
@@ -1048,7 +811,7 @@ pub fn list_all_config_profiles() -> Result<Vec<ConfigProfile>> {
 
     // Handle last profile
     if let Some(name) = current_profile {
-        if name != "awsom-defaults" && !name.starts_with("sso-session ") {
+        if !name.starts_with("sso-session ") {
             profiles.push(ConfigProfile {
                 name,
                 sso_session: profile_data.get("sso_session").cloned(),
@@ -1077,9 +840,6 @@ pub fn write_default_config(config: &DefaultConfig) -> Result<()> {
             SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
         })?;
     }
-
-    // Create backups on first write
-    create_backups_if_needed()?;
 
     let existing_config = if config_path.exists() {
         fs::read_to_string(&config_path)
@@ -1138,9 +898,6 @@ pub fn write_sso_session(session: &SsoSession, old_name: Option<&str>) -> Result
         })?;
     }
 
-    // Create backups on first write
-    create_backups_if_needed()?;
-
     let existing_config = if config_path.exists() {
         fs::read_to_string(&config_path)
             .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?
@@ -1167,6 +924,9 @@ pub fn write_sso_session(session: &SsoSession, old_name: Option<&str>) -> Result
     }
     sessions.retain(|s| s.session_name != session.session_name);
     sessions.push(session.clone());
+
+    // Sort SSO sessions alphabetically by session name
+    sessions.sort_by(|a, b| a.session_name.cmp(&b.session_name));
 
     // If renaming, update all profiles that reference the old session name
     if let Some(old) = old_name.filter(|_| is_renaming) {
@@ -1298,19 +1058,12 @@ fn rebuild_sso_sessions(sessions: &[SsoSession]) -> String {
     result
 }
 
-/// Rebuild profiles section, adding comment for awsom-defaults
+/// Rebuild profiles section
 fn rebuild_profiles(profiles: &[(String, Vec<(String, String)>)]) -> String {
     let mut result = String::new();
 
     for (profile_name, entries) in profiles {
         if profile_name != "default" {
-            // Add explanatory comment for awsom-defaults (internal profile)
-            if profile_name == "profile awsom-defaults" {
-                result.push_str(
-                    "# Internal awsom profile - stores default region/output for new profiles\n",
-                );
-                result.push_str("# This profile is not displayed in the TUI\n");
-            }
             result.push_str(&format!("[{}]\n", profile_name));
             for (key, value) in entries {
                 result.push_str(&format!("{} = {}\n", key, value));
@@ -1404,9 +1157,6 @@ pub fn write_credentials_with_metadata(
             SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
         })?;
     }
-
-    // Create backups on first write
-    create_backups_if_needed()?;
 
     // Read existing credentials file
     let existing_content = if creds_path.exists() {
@@ -1572,6 +1322,8 @@ fn profile_exists_in_user_section(profile_name: &str) -> Result<bool> {
 pub fn write_static_credentials(
     profile_name: &str,
     creds: &crate::models::StaticCredentials,
+    region: Option<&str>,
+    output: Option<&str>,
 ) -> Result<()> {
     // Validate credentials before writing
     creds.validate().map_err(SsoError::ConfigError)?;
@@ -1587,9 +1339,6 @@ pub fn write_static_credentials(
             SsoError::ConfigError(format!("Failed to create ~/.aws directory: {}", e))
         })?;
     }
-
-    // Create backups on first write
-    create_backups_if_needed()?;
 
     // Read existing credentials file
     let existing_content = if creds_path.exists() {
@@ -1624,6 +1373,74 @@ pub fn write_static_credentials(
 
     // Write updated credentials
     atomic_write(&creds_path, &sorted_content)?;
+
+    // Also write to config file if region or output are provided
+    if region.is_some() || output.is_some() {
+        let config_path = config_file_path()?;
+        let existing_config = if config_path.exists() {
+            fs::read_to_string(&config_path)
+                .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?
+        } else {
+            String::new()
+        };
+
+        // Strip any legacy markers from config
+        let config_clean = ensure_markers(&existing_config);
+
+        // Split into header and content sections
+        let (header, content, _) = split_into_sections(&config_clean);
+
+        // Parse existing content
+        let sessions = parse_sso_sessions_from_content(&content);
+        let (default_config_opt, mut profiles) = parse_profiles_from_content(&content);
+
+        // Build profile config entries
+        let profile_section = if profile_name == "default" {
+            profile_name.to_string()
+        } else {
+            format!("profile {}", profile_name)
+        };
+
+        let mut config_entries_owned: Vec<(String, String)> = vec![];
+
+        if let Some(r) = region {
+            config_entries_owned.push(("region".to_string(), r.to_string()));
+        }
+
+        if let Some(o) = output {
+            config_entries_owned.push(("output".to_string(), o.to_string()));
+        }
+
+        // Update or add profile
+        profiles.retain(|(name, _)| name != &profile_section);
+        profiles.push((profile_section, config_entries_owned));
+
+        // Sort profiles alphabetically by name
+        profiles.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Build new content: [default] first (if exists), then sorted SSO sessions, then sorted profiles
+        let mut new_content = String::new();
+
+        // Add [default] section if it exists
+        if let Some(default_config) = default_config_opt {
+            new_content.push_str("[default]\n");
+            for (key, value) in default_config {
+                new_content.push_str(&format!("{} = {}\n", key, value));
+            }
+            new_content.push('\n');
+        }
+
+        // Add sorted SSO sessions
+        new_content.push_str(&rebuild_sso_sessions(&sessions));
+
+        // Add sorted profiles (skipping default as it was handled above)
+        new_content.push_str(&rebuild_profiles(&profiles));
+
+        // Reconstruct the file
+        let result = reconstruct_config(&header, "", &new_content);
+
+        atomic_write(&config_path, &cleanup_empty_lines(&result))?;
+    }
 
     Ok(())
 }
