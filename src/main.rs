@@ -37,8 +37,21 @@ async fn main() -> Result<()> {
     // Check if running in TUI mode (no subcommand)
     let is_tui_mode = args.command.is_none();
 
-    if is_tui_mode {
-        // For TUI mode, write logs to a file to avoid breaking the UI
+    // Check if the command requires JSON-only output (no logs to stderr)
+    let requires_json_output = match &args.command {
+        Some(cli::Commands::Session { command }) => match command {
+            cli::SessionCommands::Status { json: true, .. } => true,
+            cli::SessionCommands::List { format, .. } => format == "json",
+            _ => false,
+        },
+        Some(cli::Commands::Profile {
+            command: cli::ProfileCommands::List { format, .. },
+        }) => format == "json",
+        _ => false,
+    };
+
+    // For TUI mode or JSON output mode, write logs to a file to avoid breaking the output
+    if is_tui_mode || requires_json_output {
         let log_dir = dirs::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join("awsom");
@@ -63,7 +76,7 @@ async fn main() -> Result<()> {
             }
             Err(_) => {
                 // Fallback: log to stderr if log file can't be created
-                // This may interfere with TUI, but it's better than panicking
+                // This may interfere with output, but it's better than panicking
                 tracing_subscriber::fmt()
                     .with_env_filter(
                         tracing_subscriber::EnvFilter::from_default_env()
@@ -77,7 +90,7 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        // For CLI commands, write logs to stderr as usual
+        // For CLI commands without JSON output, write logs to stderr as usual
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::from_default_env().add_directive(log_level.into()),

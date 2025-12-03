@@ -2143,19 +2143,29 @@ pub fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
 
-        let old_section = if old_name == "default" {
-            old_name.to_string()
-        } else {
-            format!("profile {}", old_name)
-        };
-
         let new_section = if new_name == "default" {
             new_name.to_string()
         } else {
             format!("profile {}", new_name)
         };
 
-        let new_content = rename_ini_section(&content, &old_section, &new_section);
+        let mut new_content = content.clone();
+
+        if old_name == "default" {
+            // Default profile never has "profile " prefix
+            new_content = rename_ini_section(&new_content, old_name, &new_section);
+        } else {
+            // Try renaming with "profile " prefix first (standard format)
+            let old_section_with_prefix = format!("profile {}", old_name);
+            new_content = rename_ini_section(&new_content, &old_section_with_prefix, &new_section);
+
+            // Also try without prefix (for manually created or legacy profiles)
+            // Only rename if the with-prefix version didn't find anything
+            if new_content == content {
+                new_content = rename_ini_section(&new_content, old_name, &new_section);
+            }
+        }
+
         atomic_write(&config_path, &new_content)?;
     }
 
@@ -2241,13 +2251,22 @@ pub fn delete_profile(profile_name: &str) -> Result<()> {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| SsoError::ConfigError(format!("Failed to read config file: {}", e)))?;
 
-        let section_name = if profile_name == "default" {
-            profile_name.to_string()
-        } else {
-            format!("profile {}", profile_name)
-        };
+        // Try to delete both formats: with and without "profile " prefix
+        // This handles profiles created manually or by older tools without the prefix
+        let mut new_content = content.clone();
 
-        let new_content = delete_ini_section(&content, &section_name);
+        if profile_name == "default" {
+            // Default profile never has "profile " prefix
+            new_content = delete_ini_section(&new_content, profile_name);
+        } else {
+            // Try deleting with "profile " prefix first (standard format)
+            let with_prefix = format!("profile {}", profile_name);
+            new_content = delete_ini_section(&new_content, &with_prefix);
+
+            // Also try without prefix (for manually created or legacy profiles)
+            new_content = delete_ini_section(&new_content, profile_name);
+        }
+
         atomic_write(&config_path, &new_content)?;
     }
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2024-12-02
+
+### Fixed
+- SSO profiles from `~/.aws/config` not loading at startup when SSO session is offline
+- Static profile rename leaving unconfigured artifact in config file (now properly deletes old profile from both credentials and config files)
+- Edit wizard not preserving region and output settings for static profiles (now pre-fills existing values from config file)
+- JSON output contaminated with log messages when using `--json` flag (logs now redirect to file for clean JSON parsing)
+
 ## [0.16.0] - 2025-11-26
 
 ### Added

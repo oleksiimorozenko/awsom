@@ -300,8 +300,9 @@ impl App {
         terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
 
         // Now load accounts from AWS API (can be slow)
-        // Only if we have SSO sessions AND an active token
-        if !self.sso_sessions.is_empty() && self.sso_token.is_some() {
+        // Load accounts if we have SSO sessions (regardless of token status)
+        // The load_accounts() function handles both active and offline sessions
+        if !self.sso_sessions.is_empty() {
             // Show loading message with spinner
             self.status_message = Some("Refreshing profile list...".to_string());
             terminal.draw(|f| self.ui(f)).map_err(SsoError::Io)?;
@@ -318,11 +319,9 @@ impl App {
                 // Select first account
                 self.accounts_list_state.select(Some(0));
             }
-        }
-
-        // If we still have no accounts (no SSO sessions or no token), load static profiles
-        // This handles the case where user has only static credentials with no SSO configured
-        if self.accounts.is_empty() {
+        } else {
+            // No SSO sessions configured - load only static profiles
+            // This handles the case where user has only static credentials with no SSO configured
             self.load_static_profiles_only();
             if !self.accounts.is_empty() {
                 self.active_pane = ActivePane::Accounts;
@@ -1404,6 +1403,18 @@ impl App {
                         self.static_secret_key_input = credentials.secret_access_key.clone();
                         self.static_session_token_input =
                             credentials.session_token.clone().unwrap_or_default();
+
+                        // Read existing region and output from config file
+                        if let Ok(Some(details)) =
+                            crate::aws_config::get_profile_details(&profile_name)
+                        {
+                            self.static_region_input = details.region.unwrap_or_default();
+                            self.static_output_input = details.output.unwrap_or_default();
+                        } else {
+                            self.static_region_input.clear();
+                            self.static_output_input.clear();
+                        }
+
                         self.static_input_cursor = self.static_profile_name_input.len();
                         self.editing_static_profile = Some(profile_name);
 
@@ -1819,12 +1830,10 @@ impl App {
 
                         let profile_name = self.static_profile_name_input.trim();
 
-                        // If editing and name changed, delete old profile
+                        // If editing and name changed, delete old profile from both credentials and config
                         if let Some(old_name) = &self.editing_static_profile {
                             if old_name != profile_name {
-                                if let Err(e) =
-                                    crate::aws_config::delete_static_credentials(old_name)
-                                {
+                                if let Err(e) = crate::aws_config::delete_profile(old_name) {
                                     tracing::warn!(
                                         "Failed to delete old profile '{}': {}",
                                         old_name,
@@ -3440,6 +3449,19 @@ impl App {
                             profile_name: Some(config_profile.name),
                         }));
                     }
+                } else if config_profile.sso_session.is_some() {
+                    // Profile has sso_session but no account_id/role_name
+                    // This is an SSO profile that hasn't been activated yet
+                    // Show it as an incomplete profile so users can see it
+                    tracing::debug!(
+                        "Adding SSO profile without account/role from config: {}",
+                        config_profile.name
+                    );
+                    config_entries.push(ProfileEntry::Incomplete {
+                        profile_name: config_profile.name,
+                        region: config_profile.region,
+                        output: config_profile.output,
+                    });
                 }
             }
 
@@ -3664,6 +3686,19 @@ impl App {
                         is_default,
                         profile_name: Some(config_profile.name),
                     }));
+                } else if config_profile.sso_session.is_some() {
+                    // Profile has sso_session but no account_id/role_name
+                    // This is an SSO profile that hasn't been activated yet or is offline
+                    // Show it as an incomplete profile so users can see it
+                    tracing::debug!(
+                        "Adding offline SSO profile without credentials: {}",
+                        config_profile.name
+                    );
+                    all_profiles.push(ProfileEntry::Incomplete {
+                        profile_name: config_profile.name,
+                        region: config_profile.region,
+                        output: config_profile.output,
+                    });
                 }
             }
 
