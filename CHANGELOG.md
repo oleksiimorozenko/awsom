@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-04-30
+
+### Fixed
+- Stale in-memory SSO token causing "service error" failures when opening the AWS Console or browsing SSM after re-authenticating externally (e.g. via `aws sso login` or a custom helper like `awsgm`). The cached on-disk token is now re-read on demand before opening the console, opening the SSM browser, or activating a role, and is also synced after every periodic session reload.
+
+### Changed
+- **Ctrl+C in an SSM session no longer exits awsom.** SIGINT is now ignored in the parent while the child `aws ssm start-session` runs (and reset to default in the child via `pre_exec`), matching standard shell behavior. Use `exit` / Ctrl+D to leave the session, as in any other shell.
+- **Esc on the main screen is now a no-op.** Previously a single Esc would quit the application; now Esc is reserved for "back / cancel" in sub-screens only, so a stray press while returning from the SSM browser no longer kills awsom.
+- **`q` on the main screen requires a double-press within 2 seconds to quit**, mirroring the existing Ctrl+C confirmation pattern. The first press shows a status hint.
+
 ## [0.16.1] - 2024-12-02
 
 ### Fixed

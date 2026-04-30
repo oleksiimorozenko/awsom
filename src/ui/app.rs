@@ -128,6 +128,8 @@ pub struct App {
     device_auth_rx: Option<tokio::sync::watch::Receiver<Option<DeviceAuthorizationInfo>>>,
     /// Last Ctrl+C press time for double-press detection
     last_ctrl_c_time: Option<std::time::Instant>,
+    /// Last 'q' press time for double-press quit confirmation on main screen
+    last_q_time: Option<std::time::Instant>,
     /// Pending confirmation action (for modal dialog)
     pending_confirm_action: Option<ConfirmAction>,
     /// SSO configuration input buffers
@@ -208,6 +210,7 @@ impl App {
             device_auth_info: None,
             device_auth_rx: None,
             last_ctrl_c_time: None,
+            last_q_time: None,
             pending_confirm_action: None,
             sso_start_url_input: String::new(),
             sso_region_input: String::new(),
@@ -551,9 +554,28 @@ impl App {
     }
 
     async fn handle_main_key(&mut self, key: KeyCode) -> Result<()> {
+        // Reset the double-press 'q' timer if any other key is pressed, so the
+        // first half of a stale q-q sequence doesn't carry over.
+        if !matches!(key, KeyCode::Char('q')) {
+            self.last_q_time = None;
+        }
         match key {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.should_quit = true;
+            KeyCode::Char('q') => {
+                let now = std::time::Instant::now();
+                let confirmed = self
+                    .last_q_time
+                    .is_some_and(|t| now.duration_since(t).as_secs() < 2);
+                if confirmed {
+                    self.should_quit = true;
+                } else {
+                    self.last_q_time = Some(now);
+                    self.status_message =
+                        Some("Press 'q' again within 2 seconds to quit".to_string());
+                }
+            }
+            KeyCode::Esc => {
+                // Esc is reserved for "back / cancel" in sub-screens; on the
+                // main screen it's a no-op so a stray press doesn't quit.
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.state = AppState::Help;
@@ -799,6 +821,43 @@ impl App {
                     "Selected session '{}' (inactive - press Enter to login)",
                     session.session_name
                 ));
+            }
+        }
+    }
+
+    /// Re-read the cached token for the currently selected SSO session from
+    /// disk and update the in-memory token/instance. Picks up tokens that were
+    /// renewed by external tools (e.g. `aws sso login`, awsgm) so we don't
+    /// keep using a stale `access_token` that AWS will reject with a service
+    /// error when calling GetRoleCredentials, federation sign-in, or SSM APIs.
+    fn refresh_current_session_token_from_disk(&mut self) {
+        let Some(selected_idx) = self.sessions_list_state.selected() else {
+            return;
+        };
+        let instance = match self.sso_sessions.get(selected_idx) {
+            Some(s) => s.instance.clone(),
+            None => return,
+        };
+        match self.auth_manager.get_cached_token(&instance) {
+            Ok(Some(token)) if !token.is_expired() => {
+                if let Some(session_mut) = self.sso_sessions.get_mut(selected_idx) {
+                    session_mut.is_active = true;
+                    session_mut.token_expiration = Some(token.expires_at);
+                    session_mut.token = Some(token.clone());
+                }
+                self.sso_instance = Some(instance);
+                self.sso_token = Some(token);
+            }
+            Ok(_) => {
+                if let Some(session_mut) = self.sso_sessions.get_mut(selected_idx) {
+                    session_mut.is_active = false;
+                    session_mut.token_expiration = None;
+                    session_mut.token = None;
+                }
+                self.sso_token = None;
+            }
+            Err(e) => {
+                tracing::debug!("Failed to read cached token from disk: {}", e);
             }
         }
     }
@@ -1153,6 +1212,9 @@ impl App {
 
     /// Toggle role session: if active, delete it; if inactive, create it
     async fn toggle_role_session(&mut self) -> Result<()> {
+        // Pick up any token refreshed by external tools (e.g. awsgm) so
+        // GetRoleCredentials doesn't fail with a stale-token service error.
+        self.refresh_current_session_token_from_disk();
         if let Some(index) = self.accounts_list_state.selected() {
             if let Some(profile_entry) = self.accounts.get(index).cloned() {
                 // Only SSO profiles can be toggled (static credentials don't have sessions)
@@ -2812,9 +2874,8 @@ impl App {
 
                 self.sso_sessions = sso_session_infos;
 
-                // Select first active session if available, otherwise select first session
+                // Select first active session if no selection yet
                 if !self.sso_sessions.is_empty() && self.sessions_list_state.selected().is_none() {
-                    // Find first active session
                     let first_active_idx = self
                         .sso_sessions
                         .iter()
@@ -2822,13 +2883,17 @@ impl App {
 
                     let selected_idx = first_active_idx.unwrap_or(0);
                     self.sessions_list_state.select(Some(selected_idx));
+                }
 
-                    // Set current session to the selected one if it's active
+                // Always sync in-memory token/instance from the currently selected
+                // session. Tokens are read fresh from disk above, so this picks up
+                // tokens renewed by external tools (e.g. `aws sso login`, awsgm) and
+                // prevents stale-token "service error" failures when calling
+                // GetRoleCredentials, federation sign-in, or SSM APIs.
+                if let Some(selected_idx) = self.sessions_list_state.selected() {
                     if let Some(selected_session) = self.sso_sessions.get(selected_idx) {
-                        if selected_session.is_active {
-                            self.sso_instance = Some(selected_session.instance.clone());
-                            self.sso_token = selected_session.token.clone();
-                        }
+                        self.sso_instance = Some(selected_session.instance.clone());
+                        self.sso_token = selected_session.token.clone();
                     }
                 }
 
@@ -3937,6 +4002,9 @@ impl App {
 
     /// Open AWS Console in browser for selected role
     async fn open_console(&mut self) -> Result<()> {
+        // Pick up any token refreshed by external tools (e.g. awsgm) so the
+        // federation call doesn't fail with a stale-token service error.
+        self.refresh_current_session_token_from_disk();
         if let Some(index) = self.accounts_list_state.selected() {
             if let Some(profile_entry) = self.accounts.get(index).cloned() {
                 // Only SSO profiles support console access
@@ -4715,7 +4783,8 @@ impl App {
             Line::from("  q, Esc      - Return to main screen"),
             Line::from(""),
             Line::from("General:"),
-            Line::from("  q, Esc      - Quit application"),
+            Line::from("  q (twice)   - Quit application (double-press to confirm)"),
+            Line::from("  Ctrl+C x2   - Force quit"),
             Line::from("  ?, F1       - Show this help screen"),
             Line::from(""),
             Line::from(Span::styled(
@@ -5307,6 +5376,9 @@ impl App {
 
     /// Open SSM browser for the selected profile
     async fn open_ssm_browser(&mut self) -> Result<()> {
+        // Pick up any token refreshed by external tools (e.g. awsgm) so SSM
+        // API calls don't fail with a stale-token service error.
+        self.refresh_current_session_token_from_disk();
         // Get currently selected profile
         let selected_idx = match self.accounts_list_state.selected() {
             Some(idx) => idx,
@@ -5712,7 +5784,19 @@ impl App {
             instance.name, instance.instance_id
         );
 
-        let mut child = std::process::Command::new("aws")
+        // While the SSM child holds the terminal, SIGINT (Ctrl+C) is delivered
+        // by the kernel to every process in the foreground process group —
+        // including awsom. Without this guard, a single Ctrl+C in the remote
+        // shell would also kill awsom. Match shell semantics: ignore SIGINT in
+        // the parent while the child runs, and reset it to SIG_DFL in the
+        // child via pre_exec so the remote session-manager-plugin still
+        // receives Ctrl+C as expected. POSIX preserves SIG_IGN across exec, so
+        // pre_exec is required — otherwise the child would inherit SIG_IGN.
+        #[cfg(unix)]
+        let prev_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+
+        let mut command = std::process::Command::new("aws");
+        command
             .arg("ssm")
             .arg("start-session")
             .arg("--target")
@@ -5722,13 +5806,33 @@ impl App {
             .env("AWS_PROFILE", &profile_name)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn();
+            .stderr(std::process::Stdio::inherit());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::signal(libc::SIGINT, libc::SIG_DFL) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = command.spawn();
 
         let status = match child {
             Ok(ref mut process) => process.wait(),
             Err(e) => Err(e),
         };
+
+        // Restore SIGINT handling in the parent now that the child is gone.
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGINT, prev_sigint);
+        }
 
         // Restore original panic hook
         let _ = std::panic::take_hook();

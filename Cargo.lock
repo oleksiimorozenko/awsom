@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "awsom"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -551,6 +551,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "dirs",
+ "libc",
  "mockall",
  "ratatui",
  "reqwest",

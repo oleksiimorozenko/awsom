@@ -1,6 +1,6 @@
 [package]
 name = "awsom"
-version = "0.16.1"
+version = "0.17.0"
 edition = "2021"
 authors = ["Oleksii Morozenko"]
 description = "k9s-like TUI for AWS SSO sessions"
@@ -63,6 +63,9 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 sha1 = "0.10"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 urlencoding = "2.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.14"
