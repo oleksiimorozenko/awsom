@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-04-30
+
+### Fixed
+- CI/release pipeline failing on Rust 1.95.0 — collapsed 17 nested `if`-inside-`match` patterns into match-arm guards to satisfy the new stricter `collapsible_match` lint. No functional change.
+
+### Changed
+- Bumped GitHub Actions away from Node 20 (deprecation deadline 2026-06-02): `actions/checkout` v4 → v6 and `actions/create-github-app-token` v1 → v3. `Swatinem/rust-cache@v2` and `dtolnay/rust-toolchain@stable` already support Node 24.
+
 ## [0.17.0] - 2026-04-30
 
 ### Fixed

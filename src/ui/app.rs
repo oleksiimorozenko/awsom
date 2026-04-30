@@ -682,41 +682,29 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('D') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // Delete profile (Shift+D) - works for all profile types
-                    self.delete_profile().await?;
-                }
+            KeyCode::Char('D') if self.active_pane == ActivePane::Accounts => {
+                // Delete profile (Shift+D) - works for all profile types
+                self.delete_profile().await?;
             }
-            KeyCode::Char('c') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // Open AWS Console in browser
-                    self.open_console().await?;
-                }
+            KeyCode::Char('c') if self.active_pane == ActivePane::Accounts => {
+                // Open AWS Console in browser
+                self.open_console().await?;
             }
-            KeyCode::Char('f') => {
-                if self.active_pane == ActivePane::Sessions {
-                    // Toggle session filter
-                    self.toggle_session_filter().await?;
-                }
+            KeyCode::Char('f') if self.active_pane == ActivePane::Sessions => {
+                // Toggle session filter
+                self.toggle_session_filter().await?;
             }
-            KeyCode::Char('v') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // View profile details
-                    self.view_profile_details();
-                }
+            KeyCode::Char('v') if self.active_pane == ActivePane::Accounts => {
+                // View profile details
+                self.view_profile_details();
             }
-            KeyCode::Char('s') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // Open SSM browser
-                    self.open_ssm_browser().await?;
-                }
+            KeyCode::Char('s') if self.active_pane == ActivePane::Accounts => {
+                // Open SSM browser
+                self.open_ssm_browser().await?;
             }
-            KeyCode::Char('x') => {
-                if self.active_pane == ActivePane::Accounts {
-                    // Copy credentials as export commands
-                    self.copy_credentials_to_clipboard().await?;
-                }
+            KeyCode::Char('x') if self.active_pane == ActivePane::Accounts => {
+                // Copy credentials as export commands
+                self.copy_credentials_to_clipboard().await?;
             }
             _ => {}
         }
@@ -1577,45 +1565,28 @@ impl App {
                 self.pending_role = None;
                 self.existing_profile_name = None;
             }
-            KeyCode::Left => {
-                // Move cursor left
-                if self.profile_input_cursor > 0 {
-                    self.profile_input_cursor -= 1;
-                }
+            KeyCode::Left if self.profile_input_cursor > 0 => {
+                self.profile_input_cursor -= 1;
             }
-            KeyCode::Right => {
-                // Move cursor right
-                if self.profile_input_cursor < self.profile_input.len() {
-                    self.profile_input_cursor += 1;
-                }
+            KeyCode::Right if self.profile_input_cursor < self.profile_input.len() => {
+                self.profile_input_cursor += 1;
             }
             KeyCode::Home => {
-                // Move cursor to beginning
                 self.profile_input_cursor = 0;
             }
             KeyCode::End => {
-                // Move cursor to end
                 self.profile_input_cursor = self.profile_input.len();
             }
-            KeyCode::Backspace => {
-                // Delete character before cursor
-                if self.profile_input_cursor > 0 {
-                    self.profile_input.remove(self.profile_input_cursor - 1);
-                    self.profile_input_cursor -= 1;
-                }
+            KeyCode::Backspace if self.profile_input_cursor > 0 => {
+                self.profile_input.remove(self.profile_input_cursor - 1);
+                self.profile_input_cursor -= 1;
             }
-            KeyCode::Delete => {
-                // Delete character at cursor
-                if self.profile_input_cursor < self.profile_input.len() {
-                    self.profile_input.remove(self.profile_input_cursor);
-                }
+            KeyCode::Delete if self.profile_input_cursor < self.profile_input.len() => {
+                self.profile_input.remove(self.profile_input_cursor);
             }
-            KeyCode::Char(c) => {
-                // Only allow alphanumeric, dash, and underscore
-                if c.is_alphanumeric() || c == '-' || c == '_' {
-                    self.profile_input.insert(self.profile_input_cursor, c);
-                    self.profile_input_cursor += 1;
-                }
+            KeyCode::Char(c) if c.is_alphanumeric() || c == '-' || c == '_' => {
+                self.profile_input.insert(self.profile_input_cursor, c);
+                self.profile_input_cursor += 1;
             }
             _ => {}
         }
@@ -1709,10 +1680,8 @@ impl App {
                 self.editing_session_original_name = None;
                 self.status_message = Some("Configuration cancelled".to_string());
             }
-            KeyCode::Left => {
-                if self.sso_input_cursor > 0 {
-                    self.sso_input_cursor -= 1;
-                }
+            KeyCode::Left if self.sso_input_cursor > 0 => {
+                self.sso_input_cursor -= 1;
             }
             KeyCode::Right => {
                 let max_len = match current_step {
@@ -1734,22 +1703,20 @@ impl App {
                     SsoConfigStep::SessionName => self.sso_session_name_input.len(),
                 };
             }
-            KeyCode::Backspace => {
-                if self.sso_input_cursor > 0 {
-                    match current_step {
-                        SsoConfigStep::StartUrl => {
-                            self.sso_start_url_input.remove(self.sso_input_cursor - 1);
-                        }
-                        SsoConfigStep::Region => {
-                            self.sso_region_input.remove(self.sso_input_cursor - 1);
-                        }
-                        SsoConfigStep::SessionName => {
-                            self.sso_session_name_input
-                                .remove(self.sso_input_cursor - 1);
-                        }
+            KeyCode::Backspace if self.sso_input_cursor > 0 => {
+                match current_step {
+                    SsoConfigStep::StartUrl => {
+                        self.sso_start_url_input.remove(self.sso_input_cursor - 1);
                     }
-                    self.sso_input_cursor -= 1;
+                    SsoConfigStep::Region => {
+                        self.sso_region_input.remove(self.sso_input_cursor - 1);
+                    }
+                    SsoConfigStep::SessionName => {
+                        self.sso_session_name_input
+                            .remove(self.sso_input_cursor - 1);
+                    }
                 }
+                self.sso_input_cursor -= 1;
             }
             KeyCode::Delete => match current_step {
                 SsoConfigStep::StartUrl => {
@@ -1965,10 +1932,8 @@ impl App {
                 self.editing_static_profile = None;
                 self.status_message = Some("Configuration cancelled".to_string());
             }
-            KeyCode::Left => {
-                if self.static_input_cursor > 0 {
-                    self.static_input_cursor -= 1;
-                }
+            KeyCode::Left if self.static_input_cursor > 0 => {
+                self.static_input_cursor -= 1;
             }
             KeyCode::Right => {
                 let max_len = match current_step {
@@ -1976,8 +1941,8 @@ impl App {
                     StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
                     StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
                     StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
-                    StaticCredentialStep::Region => self.static_region_input.len(), // NEW
-                    StaticCredentialStep::Output => self.static_output_input.len(), // NEW
+                    StaticCredentialStep::Region => self.static_region_input.len(),
+                    StaticCredentialStep::Output => self.static_output_input.len(),
                 };
                 if self.static_input_cursor < max_len {
                     self.static_input_cursor += 1;
@@ -1992,42 +1957,38 @@ impl App {
                     StaticCredentialStep::AccessKeyId => self.static_access_key_input.len(),
                     StaticCredentialStep::SecretAccessKey => self.static_secret_key_input.len(),
                     StaticCredentialStep::SessionToken => self.static_session_token_input.len(),
-                    StaticCredentialStep::Region => self.static_region_input.len(), // NEW
-                    StaticCredentialStep::Output => self.static_output_input.len(), // NEW
+                    StaticCredentialStep::Region => self.static_region_input.len(),
+                    StaticCredentialStep::Output => self.static_output_input.len(),
                 };
             }
-            KeyCode::Backspace => {
-                if self.static_input_cursor > 0 {
-                    match current_step {
-                        StaticCredentialStep::ProfileName => {
-                            self.static_profile_name_input
-                                .remove(self.static_input_cursor - 1);
-                        }
-                        StaticCredentialStep::AccessKeyId => {
-                            self.static_access_key_input
-                                .remove(self.static_input_cursor - 1);
-                        }
-                        StaticCredentialStep::SecretAccessKey => {
-                            self.static_secret_key_input
-                                .remove(self.static_input_cursor - 1);
-                        }
-                        StaticCredentialStep::SessionToken => {
-                            self.static_session_token_input
-                                .remove(self.static_input_cursor - 1);
-                        }
-                        StaticCredentialStep::Region => {
-                            // NEW
-                            self.static_region_input
-                                .remove(self.static_input_cursor - 1);
-                        }
-                        StaticCredentialStep::Output => {
-                            // NEW
-                            self.static_output_input
-                                .remove(self.static_input_cursor - 1);
-                        }
+            KeyCode::Backspace if self.static_input_cursor > 0 => {
+                match current_step {
+                    StaticCredentialStep::ProfileName => {
+                        self.static_profile_name_input
+                            .remove(self.static_input_cursor - 1);
                     }
-                    self.static_input_cursor -= 1;
+                    StaticCredentialStep::AccessKeyId => {
+                        self.static_access_key_input
+                            .remove(self.static_input_cursor - 1);
+                    }
+                    StaticCredentialStep::SecretAccessKey => {
+                        self.static_secret_key_input
+                            .remove(self.static_input_cursor - 1);
+                    }
+                    StaticCredentialStep::SessionToken => {
+                        self.static_session_token_input
+                            .remove(self.static_input_cursor - 1);
+                    }
+                    StaticCredentialStep::Region => {
+                        self.static_region_input
+                            .remove(self.static_input_cursor - 1);
+                    }
+                    StaticCredentialStep::Output => {
+                        self.static_output_input
+                            .remove(self.static_input_cursor - 1);
+                    }
                 }
+                self.static_input_cursor -= 1;
             }
             KeyCode::Delete => match current_step {
                 StaticCredentialStep::ProfileName => {
@@ -2177,10 +2138,8 @@ impl App {
                 self.pending_role = None;
                 self.status_message = Some("Profile configuration cancelled".to_string());
             }
-            KeyCode::Left => {
-                if self.new_profile_input_cursor > 0 {
-                    self.new_profile_input_cursor -= 1;
-                }
+            KeyCode::Left if self.new_profile_input_cursor > 0 => {
+                self.new_profile_input_cursor -= 1;
             }
             KeyCode::Right => {
                 let max_len = match current_step {
@@ -2202,24 +2161,22 @@ impl App {
                     NewProfileConfigStep::Output => self.new_profile_output_input.len(),
                 };
             }
-            KeyCode::Backspace => {
-                if self.new_profile_input_cursor > 0 {
-                    match current_step {
-                        NewProfileConfigStep::ProfileName => {
-                            self.new_profile_name_input
-                                .remove(self.new_profile_input_cursor - 1);
-                        }
-                        NewProfileConfigStep::Region => {
-                            self.new_profile_region_input
-                                .remove(self.new_profile_input_cursor - 1);
-                        }
-                        NewProfileConfigStep::Output => {
-                            self.new_profile_output_input
-                                .remove(self.new_profile_input_cursor - 1);
-                        }
+            KeyCode::Backspace if self.new_profile_input_cursor > 0 => {
+                match current_step {
+                    NewProfileConfigStep::ProfileName => {
+                        self.new_profile_name_input
+                            .remove(self.new_profile_input_cursor - 1);
                     }
-                    self.new_profile_input_cursor -= 1;
+                    NewProfileConfigStep::Region => {
+                        self.new_profile_region_input
+                            .remove(self.new_profile_input_cursor - 1);
+                    }
+                    NewProfileConfigStep::Output => {
+                        self.new_profile_output_input
+                            .remove(self.new_profile_input_cursor - 1);
+                    }
                 }
+                self.new_profile_input_cursor -= 1;
             }
             KeyCode::Delete => match current_step {
                 NewProfileConfigStep::ProfileName => {
